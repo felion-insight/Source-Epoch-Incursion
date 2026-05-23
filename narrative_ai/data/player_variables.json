@@ -1,0 +1,13 @@
+{
+  "_comment": "与 docs/player_variables_endings_matrix.md 对齐；供运行时注入 Prompt 或结局判定。",
+  "variables": [
+    {"abbr": "SYNC", "name": "同调值", "range": "0-100", "role": "源低语频率与内容密度"},
+    {"abbr": "HUMAN", "name": "人性值", "range": "0-100", "role": "对个体生命/自由 stance"},
+    {"abbr": "COUNCIL", "name": "议会信任值", "range": "0-100", "role": "议会路线结局"},
+    {"abbr": "PURIFY", "name": "净空会好感度", "range": "0-100", "role": "引爆源矿路线"},
+    {"abbr": "ECHO", "name": "回声集团渗透度", "range": "0-100", "role": "神经统一结局"},
+    {"abbr": "INCURSION", "name": "岸线侵入进度", "range": "0-100", "role": "强制撤离阈值"},
+    {"abbr": "RESET", "name": "记忆重置次数", "range": "0/1/2+", "role": "二周目残痕"},
+    {"abbr": "INSIGHT", "name": "源的理解度", "range": "0-100", "role": "隐藏结局判定"}
+  ]
+}

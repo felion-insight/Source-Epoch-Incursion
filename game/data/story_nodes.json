@@ -1,0 +1,453 @@
+{
+  "_comment": "骨架与 docs/critical_dialogue_nodes_blueprint.md 节点表一致；must_deliver_zh 供叙事/AI 注入；player_objectives_zh 为大地图「当前目标」玩家可见文案（勿写未揭露阴谋）。sandbox_* 字段供静默运营自动切入（见 game/sandbox_node_hooks.py）。",
+  "version": 1,
+  "nodes": {
+    "PRO-01": {
+      "title_zh": "抵达基地",
+      "act": "prologue",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": ["karen"],
+      "must_deliver_zh": [
+        "基地刚刚经历一次小型岸线侵入，损失惨重",
+        "玩家被紧急召回担任代理指挥官",
+        "前任指挥官已殉职"
+      ],
+      "player_objectives_zh": [
+        "作为被召回的代理指挥官，抵达并熟悉这座前线边境基地。",
+        "与基地负责人接洽，弄清当前警报等级、资源与人员态势。"
+      ],
+      "next": "PRO-02",
+      "choices": [
+        {
+          "id": "pro01_a",
+          "label_zh": "我会尽力",
+          "hidden_deltas": { "HUMAN": 2 },
+          "npc_trust": { "karen": 5 },
+          "next": "PRO-02"
+        },
+        {
+          "id": "pro01_b",
+          "label_zh": "我只是临时顶替",
+          "next": "PRO-02"
+        },
+        {
+          "id": "pro01_c",
+          "label_zh": "谁干的？我要查清楚",
+          "hidden_deltas": { "INSIGHT": 5 },
+          "npc_trust": { "karen": -5 },
+          "flags_add": ["skeptical_opening"],
+          "next": "PRO-02"
+        }
+      ]
+    },
+    "PRO-02": {
+      "title_zh": "首次危机",
+      "act": "prologue",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": ["karen", "dr_lin"],
+      "must_deliver_zh": [
+        "岸线侵入小规模警报：外围传感器与防线同时告急",
+        "玩家必须决定优先顺序：巩固防御或搜救/医疗支援"
+      ],
+      "player_objectives_zh": [
+        "岸线警报与基地内人员伤亡风险同时亮起，需要决定本阶段优先保障方向。",
+        "不同优先顺序会改变后续资源与关系态势，具体结果在剧情推进中呈现。"
+      ],
+      "next": "PRO-04",
+      "choices": [
+        {
+          "id": "pro02_defense",
+          "label_zh": "优先巩固防线（收缩外围、保全设施）",
+          "hidden_deltas": { "INCURSION": -5, "COUNCIL": 5 },
+          "npc_trust": { "karen": 4 },
+          "flags_add": ["defense_first"],
+          "next": "PRO-04"
+        },
+        {
+          "id": "pro02_rescue",
+          "label_zh": "优先搜救与医疗（伤员与平民）",
+          "hidden_deltas": { "HUMAN": 8, "INCURSION": 3 },
+          "resource_deltas": { "medical": -8 },
+          "npc_trust": { "dr_lin": 5 },
+          "flags_add": ["rescue_first", "tracked_chubby"],
+          "next": "PRO-04"
+        }
+      ]
+    },
+    "PRO-03": {
+      "title_zh": "夜寻数据板",
+      "act": "prologue",
+      "chapter": 2,
+      "kind": "optional",
+      "npc_focus": [],
+      "must_deliver_zh": ["发现加密数据板，为后期伏笔"],
+      "player_objectives_zh": [
+        "（可选）在基地夜间巡检或外围路线中寻找可复盘的情报或物资线索。",
+        "本条为支线探索，不影响你已完成的主线进度标签。"
+      ],
+      "next": "PRO-04"
+    },
+    "PRO-04": {
+      "title_zh": "首夜低语",
+      "act": "prologue",
+      "chapter": 2,
+      "kind": "soft_mandatory",
+      "npc_focus": ["source"],
+      "must_deliver_zh": ["梦中或幻听中接触「源」的低语"],
+      "player_objectives_zh": [
+        "首夜：留意睡眠与感知层面的异常；本作中「源」以叙事呈现为准。",
+        "此处仅提示存在相关体验，不提前描述具体细节。"
+      ],
+      "next": "01-01",
+      "on_enter_hidden": { "SYNC": 5 }
+    },
+    "01-01": {
+      "title_zh": "林博士的疑虑",
+      "act": "act1",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": ["dr_lin"],
+      "must_deliver_zh": ["林博士暗示源有异常"],
+      "player_objectives_zh": [
+        "与医疗/科研侧沟通，同步设备读数、伤员情况与基地健康风险。",
+        "对话中获得的判断以当场剧情为准，此处不预设结论。"
+      ],
+      "next": "01-02"
+    },
+    "01-02": {
+      "title_zh": "升级优先",
+      "act": "act1",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": [],
+      "must_deliver_zh": ["列出通讯阵列、源矿机、医疗实验室三项升级及预算影响"],
+      "player_objectives_zh": [
+        "指挥中心会议：在通讯阵列、源矿机、医疗实验室之间做出本阶段升级取舍。",
+        "预算、工期与立场影响见会议呈现；此处仅标出决策入口，不剧透后果。"
+      ],
+      "next": "01-04",
+      "choices": [
+        {
+          "id": "upg_comm",
+          "label_zh": "优先升级通讯阵列",
+          "hidden_deltas": { "COUNCIL": -5, "ECHO": 5 },
+          "flags_add": ["echo_route_hint"],
+          "next": "01-04"
+        },
+        {
+          "id": "upg_mine",
+          "label_zh": "优先升级源矿机",
+          "hidden_deltas": { "INCURSION": 5 },
+          "resource_deltas": { "energy": 20 },
+          "next": "01-04"
+        },
+        {
+          "id": "upg_lab",
+          "label_zh": "优先升级医疗实验室",
+          "hidden_deltas": { "HUMAN": 5 },
+          "flags_add": ["lab_priority"],
+          "next": "01-04"
+        }
+      ]
+    },
+    "01-03": {
+      "title_zh": "小胖的秘密",
+      "act": "act1",
+      "chapter": 2,
+      "kind": "optional",
+      "npc_focus": ["chubby"],
+      "must_deliver_zh": ["小胖夜间外出或能源异常"],
+      "player_objectives_zh": [
+        "（可选）留意基地内异常的人员行动或能源读数，可作为调查切入点。",
+        "是否深入、如何定性，由你在对话与现场情报中决定。"
+      ],
+      "next": "01-04"
+    },
+    "01-04": {
+      "title_zh": "加密数据棒",
+      "act": "act1",
+      "chapter": 2,
+      "kind": "soft_mandatory",
+      "npc_focus": ["dr_lin"],
+      "must_deliver_zh": ["林博士私下交给玩家加密数据棒，要求保密"],
+      "player_objectives_zh": [
+        "科研侧可能交付需要你亲自保管或转交的加密资料；遵循剧情中的约定与时机。",
+        "资料内容与后续影响在相应对话与演出中揭露，此处不概述。"
+      ],
+      "sandbox_enter_after_beat": true,
+      "sandbox_enter_min_world_days": 0,
+      "next": "01-07"
+    },
+    "01-05": {
+      "title_zh": "回声-7初现",
+      "act": "act1",
+      "chapter": 3,
+      "kind": "optional",
+      "npc_focus": ["echo_7"],
+      "must_deliver_zh": ["通讯阵列上出现异常 AI 文本"],
+      "next": "01-07"
+    },
+    "01-06": {
+      "title_zh": "堇的生态课",
+      "act": "act1",
+      "chapter": 3,
+      "kind": "optional",
+      "npc_focus": ["jin"],
+      "must_deliver_zh": ["讨论自然与科技、岸线生态"],
+      "next": "01-07"
+    },
+    "01-07": {
+      "title_zh": "岸线突破",
+      "act": "act1",
+      "chapter": 3,
+      "kind": "mandatory",
+      "npc_focus": ["karen", "dr_lin"],
+      "must_deliver_zh": ["岸线侵入显著推进，基地失去一块区域"],
+      "sandbox_enter_after_beat": true,
+      "sandbox_enter_min_world_days": 1,
+      "next": "02-01",
+      "on_enter_hidden": { "INCURSION": 15 }
+    },
+    "02-01": {
+      "title_zh": "解密数据棒",
+      "act": "act2",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": ["dr_lin"],
+      "must_deliver_zh": ["林博士展示源具有意识的证据，议会知情"],
+      "player_objectives_zh": [
+        "第一幕获得的加密数据棒须在医疗实验室由林博士完成离线解密与校验。",
+        "打开实验室面板执行解密流程，或与林博士对话后由其现场确认；完成后方可推进至下一段。",
+        "解密将牵涉议会层级知情范围，对白与演出以当场剧情为准。"
+      ],
+      "next": "02-02",
+      "on_enter_plot": { "conspiracy_tier": 1 }
+    },
+    "02-02": {
+      "title_zh": "记忆闪回Ⅰ",
+      "act": "act2",
+      "chapter": 1,
+      "kind": "soft_mandatory",
+      "npc_focus": [],
+      "must_deliver_zh": ["实验室闪回，暗示玩家同调者身份"],
+      "player_objectives_zh": [
+        "一段侵入式的感官记忆正在重演：请完整观看闪回演出后再推进主线。",
+        "演出结束后意识将回落到基地当下；随后可从指挥中心等单位推进至下一节点。"
+      ],
+      "memory_flash_lines_zh": [
+        "……滴答。滴答。监护仪的白噪声与人声的回声叠成一层薄膜，压在鼓膜上。",
+        "无影灯亮得过分诚实，不锈钢托盘里晃着你的倒影——眉眼像你，眼神却像在等待编号。",
+        "束带勒住手腕与手肘；太阳穴贴着冰凉的电极，线缆蛇一样爬向黑暗里的仪器。有人在远处读波形，像在宣读某种判决。",
+        "胸腔深处有什么与低频脉冲共振，像岸线贴着颅骨爬行。你想喊，喉咙里却只有消毒水与金属的气味。",
+        "白光骤然炸裂——\n\n你猛地抽一口气，基地的通风节律回到耳边，掌心全是冷汗。"
+      ],
+      "next": "02-03",
+      "on_enter_hidden": { "SYNC": 8, "INSIGHT": 5 }
+    },
+    "02-03": {
+      "title_zh": "小胖的请求",
+      "act": "act2",
+      "chapter": 2,
+      "kind": "conditional",
+      "npc_focus": ["chubby"],
+      "must_deliver_zh": ["小胖求助营救弟弟"],
+      "next": "02-04",
+      "requires_flags_any": ["tracked_chubby", "lab_priority"],
+      "skip_to": "02-04"
+    },
+    "02-04": {
+      "title_zh": "地下实验室",
+      "act": "act2",
+      "chapter": 2,
+      "kind": "mandatory",
+      "npc_focus": ["chubby", "dr_lin"],
+      "must_deliver_zh": ["人体实验证据与玩家病历"],
+      "next": "02-05",
+      "on_enter_hidden": { "HUMAN": 10, "INSIGHT": 10 }
+    },
+    "02-05": {
+      "title_zh": "卡伦的身份",
+      "act": "act2",
+      "chapter": 3,
+      "kind": "mandatory",
+      "npc_focus": ["karen", "dr_lin"],
+      "must_deliver_zh": [
+        "卡伦是议会「灰镜」",
+        "她监控玩家同调值",
+        "她有权执行清理协议"
+      ],
+      "next": "02-07",
+      "choices": [
+        {
+          "id": "karen_arrest",
+          "label_zh": "当场逮捕卡伦",
+          "hidden_deltas": { "COUNCIL": -20 },
+          "flags_add": ["karen_imprisoned"],
+          "next": "02-07"
+        },
+        {
+          "id": "karen_forgive",
+          "label_zh": "我理解你是被迫的",
+          "npc_trust": { "karen": 20 },
+          "flags_add": ["karen_defected"],
+          "next": "02-07"
+        },
+        {
+          "id": "karen_use",
+          "label_zh": "继续为我工作，但我会利用你",
+          "hidden_deltas": { "ECHO": 10 },
+          "npc_trust": { "karen": -10 },
+          "next": "02-07"
+        }
+      ]
+    },
+    "02-06": {
+      "title_zh": "卡伦的结局",
+      "act": "act2",
+      "chapter": 3,
+      "kind": "branch",
+      "npc_focus": ["karen"],
+      "must_deliver_zh": ["根据 02-05 选择收束卡伦线"],
+      "next": "02-07"
+    },
+    "02-07": {
+      "title_zh": "三势力接触",
+      "act": "act2",
+      "chapter": 4,
+      "kind": "mandatory",
+      "npc_focus": ["elizabeth", "echo_7", "jin"],
+      "must_deliver_zh": ["议会远程、回声-7、堇同时向玩家施压或拉拢"],
+      "sandbox_enter_after_beat": true,
+      "sandbox_enter_min_world_days": 2,
+      "next": "02-08"
+    },
+    "02-08": {
+      "title_zh": "第一次站队",
+      "act": "act2",
+      "chapter": 4,
+      "kind": "branch",
+      "npc_focus": ["elizabeth", "echo_7", "jin"],
+      "must_deliver_zh": ["三方诉求摊牌，玩家表态"],
+      "next": "03-01",
+      "choices": [
+        {
+          "id": "align_council",
+          "label_zh": "倾向议会配合筛选",
+          "hidden_deltas": { "COUNCIL": 30, "PURIFY": -20, "ECHO": -20 },
+          "next": "03-01"
+        },
+        {
+          "id": "align_purge",
+          "label_zh": "倾向净空会引爆方案",
+          "hidden_deltas": { "PURIFY": 30, "COUNCIL": -20, "ECHO": -20 },
+          "next": "03-01"
+        },
+        {
+          "id": "align_echo",
+          "label_zh": "倾向回声集团神经统一",
+          "hidden_deltas": { "ECHO": 30, "COUNCIL": -20, "PURIFY": -20 },
+          "next": "03-01"
+        },
+        {
+          "id": "align_none",
+          "label_zh": "拒绝所有，保持独立",
+          "hidden_deltas": { "COUNCIL": -10, "PURIFY": -10, "ECHO": -10, "HUMAN": 15, "INSIGHT": 10 },
+          "next": "03-01"
+        }
+      ]
+    },
+    "03-01": {
+      "title_zh": "寻找克莱因",
+      "act": "act3",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": ["klein"],
+      "must_deliver_zh": ["根据前序线索找到克莱因囚禁处"],
+      "next": "03-02"
+    },
+    "03-02": {
+      "title_zh": "克莱因的遗言",
+      "act": "act3",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": ["klein"],
+      "must_deliver_zh": [
+        "源为先驱文明记忆集合",
+        "源纪元已 230 年、多次记忆重置",
+        "玩家为双向同调者",
+        "先驱遗言：保留个体意识"
+      ],
+      "next": "03-03",
+      "on_enter_plot": { "conspiracy_tier": 3 },
+      "on_enter_hidden": { "INSIGHT": 25 }
+    },
+    "03-03": {
+      "title_zh": "源深度对话",
+      "act": "act3",
+      "chapter": 2,
+      "kind": "soft_mandatory",
+      "npc_focus": ["source"],
+      "must_deliver_zh": ["自由文本与源交互，仅碎片与隐喻"],
+      "next": "03-04",
+      "on_enter_hidden": { "SYNC": 15, "INSIGHT": 10 }
+    },
+    "03-04": {
+      "title_zh": "先驱遗言",
+      "act": "act3",
+      "chapter": 2,
+      "kind": "mandatory",
+      "npc_focus": ["klein", "source"],
+      "must_deliver_zh": ["获得遗言全文或等效叙事块"],
+      "next": "03-05"
+    },
+    "03-05": {
+      "title_zh": "最后的防线",
+      "act": "act3",
+      "chapter": 3,
+      "kind": "mandatory",
+      "npc_focus": ["karen", "dr_lin"],
+      "must_deliver_zh": ["岸线危急，基地濒临毁灭时限压力"],
+      "next": "03-06",
+      "on_enter_hidden": { "INCURSION": 20 }
+    },
+    "03-06": {
+      "title_zh": "三方最后通牒",
+      "act": "act3",
+      "chapter": 3,
+      "kind": "mandatory",
+      "npc_focus": ["elizabeth", "echo_7", "jin"],
+      "must_deliver_zh": ["三势力要求最终回复"],
+      "next": "FIN-01"
+    },
+    "FIN-01": {
+      "title_zh": "终局对话",
+      "act": "finale",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": ["karen", "dr_lin", "chubby"],
+      "must_deliver_zh": ["与核心 NPC 告别或总结性对话"],
+      "next": "FIN-02"
+    },
+    "FIN-02": {
+      "title_zh": "最终选择",
+      "act": "finale",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": [],
+      "must_deliver_zh": ["根据变量展示可达结局；由引擎动态生成选项"],
+      "next": null,
+      "on_enter_plot": { "conspiracy_tier": 4 }
+    },
+    "FIN-03": {
+      "title_zh": "结局演出",
+      "act": "finale",
+      "chapter": 1,
+      "kind": "mandatory",
+      "npc_focus": [],
+      "must_deliver_zh": ["结局标题与后日谈占位"],
+      "next": null
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "title": "源纪元 · 岸线侵入",
+  "documentation_manifest": [
+    "docs/gdd_master_outline.md",
+    "docs/conspiracy_lore_codex.md",
+    "docs/npc_bible_ai_characters.md",
+    "docs/management_sim_design.md",
+    "docs/narrative_structure_blueprint_2026-05-08.md",
+    "docs/critical_dialogue_nodes_blueprint.md",
+    "docs/player_variables_endings_matrix.md"
+  ],
+  "year_label": "公元2125年，源纪元",
+  "premise_player": "前源矿工程师，因事故失去队友，被召回担任边境基地代理指挥官；实为早期成功同调者，记忆被清洗。",
+  "surface_conflict": "源在深海自我增殖并向大陆蔓延，称「岸线侵入」；曙光议会组织领导抵抗。",
+  "factions": [
+    {"id": "dawn_council", "name": "曙光议会", "stance": "推动筛选与同调实验，立场内部分裂。"},
+    {"id": "purge_union", "name": "净空会", "stance": "摧毁源，不惜生态代价。"},
+    {"id": "echo_collective", "name": "回声集团", "stance": "强制集体意识，视玩家为关键容器。"}
+  ],
+  "conspiracy_tiers": [
+    {"tier": 1, "player_facing": "源具原始意识；议会加速岸线侵入以筛选可同调者。"},
+    {"tier": 2, "player_facing": "源为先驱文明记忆与情感的量子凝聚体；侵入为信息过载副作用。"},
+    {"tier": 3, "player_facing": "源纪元已持续约230年，多次记忆重置；玩家为双向同调者。"},
+    {"tier": 4, "player_facing": "多势力终局博弈：摧毁/共生/统一意识/循环等道路。"}
+  ],
+  "global_tone": "科幻、道德困境、悬疑层层揭示；对话为主，经营为叙事触发器。",
+  "sim_resources": ["energy", "food", "medical", "intel"]
+}

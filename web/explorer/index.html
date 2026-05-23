@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <meta name="theme-color" content="#070a10" />
+    <title>源纪元 · 岸线侵入 — 基地大地图探索</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="styles.css?v=explorer_api_banner_detail_20260517" />
+    <link rel="preload" as="image" href="assets/tile_void.jpg" />
+    <link rel="preload" as="image" href="assets/tile_road.jpg" />
+    <link rel="preload" as="image" href="assets/tile_build.jpg" />
+    <link rel="preload" as="image" href="assets/walkable_floor_tile.png" />
+  </head>
+  <body class="explorer-app">
+    <aside id="objectives-panel" class="objectives-panel" aria-label="任务目标">
+      <div class="objectives-panel__top-tools">
+        <button type="button" id="sandbox-playbook-open" class="sandbox-playbook-openchip" aria-expanded="false">
+          静默玩法教程
+        </button>
+      </div>
+      <div id="sandbox-dock" class="sandbox-dock hidden" aria-label="静默运营"></div>
+      <div class="objectives-tabs">
+        <button type="button" class="objectives-tab active" data-tab="current">当前</button>
+        <button type="button" class="objectives-tab" data-tab="upcoming">后续</button>
+        <button type="button" class="objectives-tab" data-tab="mgmt">决算</button>
+        <button type="button" class="objectives-tab" data-tab="explore">探索</button>
+        <button type="button" class="objectives-tab" data-tab="dossier">档案</button>
+      </div>
+      <div id="objectives-content">
+        <div id="objectives-current" class="objectives-tab-content active" data-content="current"></div>
+        <div id="objectives-upcoming" class="objectives-tab-content" data-content="upcoming"></div>
+        <div id="objectives-mgmt-log" class="objectives-tab-content" data-content="mgmt" aria-live="polite"></div>
+        <div id="objectives-explore" class="objectives-tab-content" data-content="explore"></div>
+        <div id="objectives-dossier" class="objectives-tab-content" data-content="dossier"></div>
+      </div>
+    </aside>
+    <div id="wrap">
+      <canvas id="game" aria-label="基地大地图"></canvas>
+      <canvas id="minimap" width="200" height="150" aria-label="小地图"></canvas>
+      <div id="resource-strip" class="resource-strip" aria-label="基地资源"></div>
+    </div>
+    <div id="story-backdrop" class="story-backdrop hidden" aria-hidden="true">
+      <div id="story-panel" class="story-panel" role="dialog" aria-modal="true" aria-labelledby="story-title">
+        <button type="button" class="story-close" id="story-close" aria-label="关闭">×</button>
+        <aside class="story-sprite" aria-hidden="false">
+          <div id="story-sprite-block" class="story-sprite-block"></div>
+          <div id="story-sprite-label" class="story-sprite-label"></div>
+        </aside>
+        <div id="story-textbox" class="story-textbox">
+          <!-- 玩家选项：叠在文字框右上角 -->
+          <div id="story-choices" class="story-choices"></div>
+          <div id="story-body" class="story-body">
+            <h2 id="story-title">剧情</h2>
+            <p id="story-advance-hint" class="story-advance-hint hidden" aria-live="polite">
+              按 <kbd>Z</kbd> 或点击对话框继续下一句
+            </p>
+            <p id="story-sub" class="story-sub"></p>
+            <ul id="story-bullets" class="story-bullets"></ul>
+            <pre id="story-ai-line" class="story-ai-line"></pre>
+            <div id="story-meta" class="story-meta"></div>
+            <div id="story-extras"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="main.js?v=fetch_json_get_no_preflight_20260517"></script>
+  </body>
+</html>

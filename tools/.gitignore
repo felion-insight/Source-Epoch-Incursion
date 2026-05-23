@@ -1,0 +1,13 @@
+# 本地 API 密钥（从 narrative_ai/user_settings.example.py 复制为 user_settings.py 后填写）
+narrative_ai/user_settings.py
+
+# Python / 运行产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 本地存档与密钥
+savegame.json
+.env
+.env.*
