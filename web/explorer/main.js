@@ -684,6 +684,7 @@ function startMapTileTexturesLoad() {
     ...facilityIds.map((id) => new URL(`./assets/facilities/${id}.png`, base).href),
     ...portraitRel.map((r) => new URL(r, base).href),
     ...iconRel.map((r) => new URL(r, base).href),
+    new URL("./sound/background.mp3", base).href,
   ];
 
   let loaded = 0;
@@ -712,14 +713,21 @@ function startMapTileTexturesLoad() {
     return;
   }
 
+  const doneOne = () => {
+    loaded++;
+    updateProgress();
+    if (loaded >= total) onAllDone();
+  };
+
   for (const url of urls) {
-    const img = new Image();
-    img.onload = img.onerror = () => {
-      loaded++;
-      updateProgress();
-      if (loaded >= total) onAllDone();
-    };
-    img.src = url;
+    if (url.endsWith(".mp3")) {
+      // 音频文件用 fetch 预热缓存
+      fetch(url, { cache: "force-cache", mode: "no-cors" }).then(doneOne, doneOne);
+    } else {
+      const img = new Image();
+      img.onload = img.onerror = doneOne;
+      img.src = url;
+    }
   }
 })();
 
