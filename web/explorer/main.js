@@ -4229,8 +4229,8 @@ function initDevPanel() {
   document.body.appendChild(toggle);
   document.body.appendChild(panel);
 
-  // 首次加载节点列表（后台预加载）
-  loadDebugNodes(select, hint);
+  // 不再无条件预加载 debug 节点列表（生产环境 GAME_DEBUG_API=0 会导致 403）。
+  // 用户点击 DEV 按钮时才会按需加载。
 
   // 定时更新当前节点显示
   setInterval(() => {

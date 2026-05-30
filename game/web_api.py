@@ -873,13 +873,18 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                         agent = npc_agent_for(sess, npc_id)
                         sim = build_simulation_snapshot(sess)
                         beat = narrative_story_beat_system(sess) if story_focus else None
-                        text = agent.generate(
-                            mode="scene_line",
-                            player_context=ctx,
-                            sim=sim,
-                            max_tokens=int(body.get("max_tokens") or 520),
-                            story_beat_system=beat,
-                        )
+                        try:
+                            text = agent.generate(
+                                mode="scene_line",
+                                player_context=ctx,
+                                sim=sim,
+                                max_tokens=int(body.get("max_tokens") or 520),
+                                story_beat_system=beat,
+                            )
+                        except RuntimeError:
+                            # AI 后端过载/不可用时，返回降级占位文本，不阻断游戏
+                            traceback.print_exc()
+                            text = "“……（通信受阻，信号断断续续）……”"
                         st = sess.get_memory_store(npc_id)
                         st.record_turn(InteractionTurn("npc", text[:600]))
                         sess.save_memory_store(st)
@@ -916,13 +921,17 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                         ctx = str(extra) if extra else _player_context_for_npc(sess, npc_id)
                         agent = npc_agent_for(sess, npc_id)
                         sim = build_simulation_snapshot(sess)
-                        text = agent.generate(
-                            mode=mode,  # type: ignore[arg-type]
-                            player_context=ctx,
-                            sim=sim,
-                            max_tokens=int(body.get("max_tokens") or 500),
-                            story_beat_system=narrative_story_beat_system(sess),
-                        )
+                        try:
+                            text = agent.generate(
+                                mode=mode,  # type: ignore[arg-type]
+                                player_context=ctx,
+                                sim=sim,
+                                max_tokens=int(body.get("max_tokens") or 500),
+                                story_beat_system=narrative_story_beat_system(sess),
+                            )
+                        except RuntimeError:
+                            traceback.print_exc()
+                            text = "“……（通信受阻，信号断断续续）……”"
                         st = sess.get_memory_store(npc_id)
                         st.record_turn(InteractionTurn("npc", text[:600]))
                         sess.save_memory_store(st)
@@ -1003,20 +1012,28 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                         agent = npc_agent_for(sess, npc_id)
                         sim = build_simulation_snapshot(sess)
                         soft_limit, hard_limit = get_conversation_turn_limits(sess)
-                        result = agent.chat_turn(
-                            player_text=player_text if player_text else "（玩家走近，等待回应）",
-                            conversation_history=sess.conversation_history[:-1],  # 不包括刚加的这一条
-                            choice_labels=choice_labels,
-                            node_id=node.id,
-                            node_title_zh=node.title_zh,
-                            must_deliver_zh=sess.get_active_must_deliver_zh(),
-                            sim=sim,
-                            turn_number=sess.conversation_turn_count + 1,  # 即将进行的轮次
-                            soft_limit=soft_limit,
-                            hard_limit=hard_limit,
-                        )
-
-                        # 记录 NPC 回复
+                        fallback_text = "“……（通信受阻，信号断断续续）……”"
+                        try:
+                            result = agent.chat_turn(
+                                player_text=player_text if player_text else "（玩家走近，等待回应）",
+                                conversation_history=sess.conversation_history[:-1],  # 不包括刚加的这一条
+                                choice_labels=choice_labels,
+                                node_id=node.id,
+                                node_title_zh=node.title_zh,
+                                must_deliver_zh=sess.get_active_must_deliver_zh(),
+                                sim=sim,
+                                turn_number=sess.conversation_turn_count + 1,  # 即将进行的轮次
+                                soft_limit=soft_limit,
+                                hard_limit=hard_limit,
+                            )
+                        except RuntimeError:
+                            traceback.print_exc()
+                            # AI 不可用时返回降级文本
+                            from narrative_ai.npc_agent import ChatTurnResult
+                            result = ChatTurnResult(
+                                npc_text=fallback_text,
+                                topic_status="on_topic",
+                            )
                         sess.conversation_history.append({
                             "role": "npc",
                             "text": result.npc_text,
@@ -1284,7 +1301,11 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                     scene = source_whisper_scene_zh(n.id, n.title_zh, sess.get_active_must_deliver_zh())
                     extra = body.get("extra_world")
                     merged = f"{scene}\n{extra}" if extra else scene
-                    ans = src.whisper(question=q, session=s, extra_world=merged)
+                    try:
+                        ans = src.whisper(question=q, session=s, extra_world=merged)
+                    except RuntimeError:
+                        traceback.print_exc()
+                        ans = "……（源的回声被淹没在噪声中）……"
                     persist_source_exchange(sess, q, ans)
                     _send_json(self, 200, {"ok": True, "text": ans, **_state_payload(sess)})
                 elif path == "/api/session/reset":
