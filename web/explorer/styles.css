@@ -2168,6 +2168,48 @@ body.scene-workshop .objectives-panel {
   display: none;
 }
 
+/* 工坊操作加载中：半透明遮罩 + 旋转指示器 */
+.workshop-map--loading::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+
+.workshop-map--loading .workshop-map-center::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+}
+
+.workshop-map--loading .workshop-map-center::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 999;
+  width: 32px;
+  height: 32px;
+  margin: -16px 0 0 -16px;
+  border: 2px solid rgba(200, 210, 240, 0.15);
+  border-top-color: rgba(180, 200, 240, 0.7);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: workshop-spin 0.7s linear infinite;
+}
+
+@keyframes workshop-spin {
+  to { transform: rotate(360deg); }
+}
+
 .workshop-map-viewport {
   display: flex;
   flex-direction: column;

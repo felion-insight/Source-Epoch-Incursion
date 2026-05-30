@@ -2718,7 +2718,14 @@ function workshopSnapFromData(data) {
   return data?.workshop || data?.underground_workshop || data?.west_shaft || data?.west_shaft_sim;
 }
 
+function setWorkshopLoading(on) {
+  if (workshopMapEl) {
+    workshopMapEl.classList.toggle("workshop-map--loading", on);
+  }
+}
+
 async function syncWorkshopFromResponse(data, opts = {}) {
+  setWorkshopLoading(false);
   latestState = data;
   // 工坊操作后立即保存到 localStorage
   persistSessionToLocalStorage();
@@ -3779,6 +3786,7 @@ async function openWestShaftSimScene(fromId) {
 }
 
 async function postWorkshopConstruct() {
+  setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/construct"), { method: "POST", body: "{}" });
     await syncWorkshopFromResponse(data);
@@ -3803,6 +3811,7 @@ async function postWorkshopConstruct() {
 }
 
 async function postWorkshopBuild(x, y, deviceType) {
+  setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/build"), {
       method: "POST",
@@ -3824,6 +3833,7 @@ async function postWorkshopBuild(x, y, deviceType) {
 }
 
 async function postWorkshopUpgrade(x, y) {
+  setWorkshopLoading(true);
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/upgrade"), {
@@ -3838,6 +3848,7 @@ async function postWorkshopUpgrade(x, y) {
 }
 
 async function postWorkshopDemolish(x, y) {
+  setWorkshopLoading(true);
   try {
     workshopSelected = null;
     workshopCancelMoveMode();
@@ -3853,6 +3864,7 @@ async function postWorkshopDemolish(x, y) {
 }
 
 async function postWorkshopMove(fromX, fromY, toX, toY) {
+  setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/move"), {
       method: "POST",
@@ -3874,6 +3886,7 @@ async function postWorkshopMove(fromX, fromY, toX, toY) {
 }
 
 async function postWorkshopToggle(x, y) {
+  setWorkshopLoading(true);
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/toggle"), {
@@ -3888,6 +3901,7 @@ async function postWorkshopToggle(x, y) {
 }
 
 async function postWorkshopAssignNpc(x, y, npcId) {
+  setWorkshopLoading(true);
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/assign_npc"), {
@@ -3902,6 +3916,7 @@ async function postWorkshopAssignNpc(x, y, npcId) {
 }
 
 async function postWorkshopSetRecipe(x, y, recipe) {
+  setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/set_recipe"), {
       method: "POST",
@@ -3918,6 +3933,7 @@ async function postWorkshopSetRecipe(x, y, recipe) {
 }
 
 async function postWorkshopDelegate(enabled) {
+  setWorkshopLoading(true);
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/delegate"), {
@@ -3932,6 +3948,7 @@ async function postWorkshopDelegate(enabled) {
 }
 
 async function postWorkshopImportOre(amount) {
+  setWorkshopLoading(true);
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/import_source_ore"), {
@@ -3965,6 +3982,7 @@ async function postWorkshopExport(resource, amount) {
 }
 
 async function postWorkshopSetCaps(caps, enabled) {
+  setWorkshopLoading(true);
   try {
     const body = {};
     if (caps) body.caps = caps;
@@ -3999,6 +4017,7 @@ async function postWorkshopDeliverTask(taskId) {
 }
 
 async function postWorkshopTrade(tradeId) {
+  setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/trade"), {
       method: "POST",
@@ -4012,6 +4031,7 @@ async function postWorkshopTrade(tradeId) {
 }
 
 async function postWorkshopRestNpc(npcId) {
+  setWorkshopLoading(true);
   try {
     const npcLabel = (workshopUiSnap?.npc_fatigue || []).find((r) => r.id === npcId)?.label_zh || npcId;
     await syncWorkshopFromResponse(
@@ -4028,6 +4048,7 @@ async function postWorkshopRestNpc(npcId) {
 }
 
 async function postWorkshopRehabilitate() {
+  setWorkshopLoading(true);
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/rehabilitate"), { method: "POST", body: "{}" }),
