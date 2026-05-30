@@ -4324,9 +4324,95 @@ function initDebugJumpBar() {
 
 // 用新的 dev panel 替换旧的 debug jump bar 初始化
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => { initDevPanel(); });
+  document.addEventListener("DOMContentLoaded", () => { initDevPanel(); initBgm(); });
 } else {
   initDevPanel();
+  initBgm();
+}
+
+/**
+ * 背景音乐控制
+ * - 浏览器要求用户交互后才能播放音频，因此监听首次点击/按键来启动 BGM
+ * - 右下角 ♪ 按钮可随时开关
+ * - 状态持久化到 localStorage
+ */
+const BGM_LS_KEY = "epoch_explorer_bgm_enabled_v1";
+let bgmAudio = null;
+let bgmToggleBtn = null;
+let bgmUserEnabled = true; // 默认开启
+let bgmInteractionPrimed = false;
+
+function initBgm() {
+  bgmAudio = document.getElementById("bgm");
+  bgmToggleBtn = document.getElementById("bgm-toggle");
+  if (!bgmAudio || !bgmToggleBtn) return;
+
+  // 读取用户偏好
+  try {
+    const saved = localStorage.getItem(BGM_LS_KEY);
+    if (saved === "0") bgmUserEnabled = false;
+  } catch { /* ignore */ }
+
+  // 音量柔和
+  bgmAudio.volume = 0.35;
+
+  // 更新按钮外观
+  syncBgmToggleUI();
+
+  // 按钮点击：开关
+  bgmToggleBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    bgmUserEnabled = !bgmUserEnabled;
+    try { localStorage.setItem(BGM_LS_KEY, bgmUserEnabled ? "1" : "0"); } catch { /* ignore */ }
+    bgmInteractionPrimed = true;
+    applyBgmPlayState();
+    syncBgmToggleUI();
+  });
+
+  // 首次用户交互（任意点击/按键）启动 BGM
+  const prime = () => {
+    if (bgmInteractionPrimed) return;
+    bgmInteractionPrimed = true;
+    applyBgmPlayState();
+  };
+  document.addEventListener("click", prime, { once: false });
+  document.addEventListener("keydown", prime, { once: false });
+  document.addEventListener("touchstart", prime, { once: false, passive: true });
+
+  // 同时尝试自动播放（部分桌面浏览器允许静音自动播放，然后用户在交互后取消静音也没用，所以只能等交互）
+  // 如果浏览器策略允许（如用户之前已互动过其他标签页），则直接播放
+  bgmAudio.play().then(() => {
+    if (!bgmUserEnabled) {
+      bgmAudio.pause();
+    }
+    bgmInteractionPrimed = true;
+    syncBgmToggleUI();
+  }).catch(() => {
+    // 自动播放被阻止，等待用户交互
+  });
+}
+
+function applyBgmPlayState() {
+  if (!bgmAudio) return;
+  if (bgmUserEnabled) {
+    bgmAudio.play().catch(() => {});
+  } else {
+    bgmAudio.pause();
+  }
+}
+
+function syncBgmToggleUI() {
+  if (!bgmToggleBtn || !bgmAudio) return;
+  const playing = !bgmAudio.paused;
+  if (playing) {
+    bgmToggleBtn.classList.add("bgm-toggle--playing");
+    bgmToggleBtn.innerHTML = "♫";
+    bgmToggleBtn.setAttribute("aria-label", "关闭背景音乐");
+  } else {
+    bgmToggleBtn.classList.remove("bgm-toggle--playing");
+    bgmToggleBtn.innerHTML = "♪";
+    bgmToggleBtn.setAttribute("aria-label", "开启背景音乐");
+  }
 }
 
 function showToast(msg, ms = 2800) {

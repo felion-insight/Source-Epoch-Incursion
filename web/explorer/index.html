@@ -6,6 +6,8 @@
     <meta name="theme-color" content="#070a10" />
     <title>源纪元 · 岸线侵入 — 基地大地图探索</title>
     <link rel="icon" href="assets/icons/favicon.png" type="image/png" />
+    <!-- 背景音乐（用户首次交互后自动播放） -->
+    <audio id="bgm" src="sound/background.mp3" loop preload="auto"></audio>
     <link rel="stylesheet" href="styles.css?v=ui_beautify_sb_20260530" />
     <link rel="preload" as="image" href="assets/tile_void.jpg" />
     <link rel="preload" as="image" href="assets/tile_road.jpg" />
@@ -32,9 +34,11 @@
     </aside>
     <div id="wrap">
       <canvas id="game" aria-label="基地大地图"></canvas>
-      <canvas id="minimap" width="200" height="150" aria-label="小地图"></canvas>
-      <div id="resource-strip" class="resource-strip" aria-label="基地资源"></div>
-    </div>
+    <canvas id="minimap" width="200" height="150" aria-label="小地图"></canvas>
+    <div id="resource-strip" class="resource-strip" aria-label="基地资源"></div>
+  </div>
+    <!-- 背景音乐开关 -->
+    <button type="button" id="bgm-toggle" class="bgm-toggle" title="背景音乐" aria-label="切换背景音乐">♪</button>
     <div id="story-backdrop" class="story-backdrop hidden" aria-hidden="true">
       <div id="story-panel" class="story-panel" role="dialog" aria-modal="true" aria-labelledby="story-title">
         <button type="button" class="story-close" id="story-close" aria-label="关闭">×</button>

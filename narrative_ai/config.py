@@ -89,7 +89,7 @@ def _read_timeout() -> float:
         v = getattr(mod, "NARRATIVE_AI_TIMEOUT")
         if v is not None and str(v).strip():
             return float(v)
-    return 30.0
+    return 120.0
 
 
 def _read_max_retries() -> int:

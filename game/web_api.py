@@ -881,7 +881,7 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                                 max_tokens=int(body.get("max_tokens") or 520),
                                 story_beat_system=beat,
                             )
-                        except RuntimeError:
+                        except Exception:
                             # AI 后端过载/不可用时，返回降级占位文本，不阻断游戏
                             traceback.print_exc()
                             text = "“……（通信受阻，信号断断续续）……”"
@@ -929,7 +929,7 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                                 max_tokens=int(body.get("max_tokens") or 500),
                                 story_beat_system=narrative_story_beat_system(sess),
                             )
-                        except RuntimeError:
+                        except Exception:
                             traceback.print_exc()
                             text = "“……（通信受阻，信号断断续续）……”"
                         st = sess.get_memory_store(npc_id)
@@ -1026,7 +1026,7 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                                 soft_limit=soft_limit,
                                 hard_limit=hard_limit,
                             )
-                        except RuntimeError:
+                        except Exception:
                             traceback.print_exc()
                             # AI 不可用时返回降级文本
                             from narrative_ai.npc_agent import ChatTurnResult
@@ -1303,7 +1303,7 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                     merged = f"{scene}\n{extra}" if extra else scene
                     try:
                         ans = src.whisper(question=q, session=s, extra_world=merged)
-                    except RuntimeError:
+                    except Exception:
                         traceback.print_exc()
                         ans = "……（源的回声被淹没在噪声中）……"
                     persist_source_exchange(sess, q, ans)
