@@ -547,25 +547,37 @@ function wireExplorerAsset(img, relativePath, warnLabel, onReady) {
   if (img.complete && img.naturalWidth > 0) ready();
 }
 
+/** 按需加载单个设施贴图（替代启动时全量预加载） */
+function loadFacilitySprite(id) {
+  if (facilitySpriteImages.has(id)) return;
+  const f = FACILITIES.find((x) => x.id === id);
+  if (!f) return;
+  const rel = `./assets/facilities/${f.id}.png`;
+  const img = new Image();
+  facilitySpriteImages.set(f.id, img);
+  wireExplorerAsset(img, rel, `facility_${f.id}`, () => {});
+}
+
+/** 按需加载单个 NPC 立绘（替代启动时全量预加载） */
+function loadPortraitSprite(id) {
+  if (portraitSpriteImages.has(id)) return;
+  const rel = PORTRAIT_SPRITE_PATH[id];
+  if (!rel) return;
+  const img = new Image();
+  portraitSpriteImages.set(id, img);
+  wireExplorerAsset(img, rel, `portrait_${id}`, () => {
+    if (storyPortraitKind === "npc" && storyPortraitId === id) {
+      setStoryPortrait("npc", id, storyPortraitLabel);
+    }
+  });
+}
+
 function startFacilitySpriteLoad() {
-  for (const f of FACILITIES) {
-    const rel = `./assets/facilities/${f.id}.png`;
-    const img = new Image();
-    facilitySpriteImages.set(f.id, img);
-    wireExplorerAsset(img, rel, `facility_${f.id}`, () => {});
-  }
+  // 不再启动时全量加载；改为在玩家接近/打开设施时按需加载
 }
 
 function startPortraitSpriteLoad() {
-  for (const [id, rel] of Object.entries(PORTRAIT_SPRITE_PATH)) {
-    const img = new Image();
-    portraitSpriteImages.set(id, img);
-    wireExplorerAsset(img, rel, `portrait_${id}`, () => {
-      if (storyPortraitKind === "npc" && storyPortraitId === id) {
-        setStoryPortrait("npc", id, storyPortraitLabel);
-      }
-    });
-  }
+  // 不再启动时全量加载；改为在打开 NPC 对话时按需加载
 }
 
 const WORKSHOP_DEVICE_ICON = {
@@ -1934,11 +1946,15 @@ function setStoryPortrait(kind, kindId, labelText) {
   let src = "";
   if (kind === "npc") {
     const path = PORTRAIT_SPRITE_PATH[kindId];
+    // 按需加载立绘
+    if (path && !portraitSpriteImages.has(kindId)) loadPortraitSprite(kindId);
     const cached = portraitSpriteImages.get(kindId);
     if (path && cached?.complete && cached.naturalWidth > 0) {
       src = new URL(path, tileAssetBaseUrl()).href;
     }
   } else if (kind === "facility") {
+    // 按需加载设施贴图
+    if (!facilitySpriteImages.has(kindId)) loadFacilitySprite(kindId);
     const cached = facilitySpriteImages.get(kindId);
     const path = cached ? `./assets/facilities/${kindId}.png` : "";
     if (path && cached?.complete && cached.naturalWidth > 0) {
@@ -2445,14 +2461,22 @@ function explorerIconReady(key) {
 }
 
 function startExplorerIconLoad() {
-  for (const [key, rel] of Object.entries(EXPLORER_ICON_PATH)) {
-    const img = new Image();
-    explorerIconImages.set(key, img);
-    wireExplorerAsset(img, rel, `icon_${key}`, () => {
-      initObjectivesTabIcons();
-      const strip = document.getElementById("resource-strip");
-      if (strip && latestState?.session) renderMgmtResourcesHud(latestState.session);
-    });
+  const entries = Object.entries(EXPLORER_ICON_PATH);
+  // 分批加载，每批 4 个，间隔 80ms，避免同时抢占所有连接池
+  const BATCH = 4;
+  const DELAY = 80;
+  for (let i = 0; i < entries.length; i++) {
+    const [key, rel] = entries[i];
+    const batchOffset = Math.floor(i / BATCH) * DELAY;
+    setTimeout(() => {
+      const img = new Image();
+      explorerIconImages.set(key, img);
+      wireExplorerAsset(img, rel, `icon_${key}`, () => {
+        initObjectivesTabIcons();
+        const strip = document.getElementById("resource-strip");
+        if (strip && latestState?.session) renderMgmtResourcesHud(latestState.session);
+      });
+    }, batchOffset);
   }
 }
 
@@ -7003,6 +7027,8 @@ function drawWorld(vw, vh) {
   for (const f of FACILITIES) {
     const draw = facilityDrawRect(f);
     const foot = facilityFootprint(f);
+    // 按需加载设施贴图（首次渲染时触发，has() 防重复）
+    if (!facilitySpriteImages.has(f.id)) loadFacilitySprite(f.id);
     const facImg = facilitySpriteImages.get(f.id);
     const hasSprite = facImg?.complete && facImg.naturalWidth > 0;
     if (hasSprite) {
