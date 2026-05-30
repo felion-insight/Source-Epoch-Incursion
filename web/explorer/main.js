@@ -573,11 +573,24 @@ function loadPortraitSprite(id) {
 }
 
 function startFacilitySpriteLoad() {
-  // 不再启动时全量加载；改为在玩家接近/打开设施时按需加载
+  for (const f of FACILITIES) {
+    const rel = `./assets/facilities/${f.id}.png`;
+    const img = new Image();
+    facilitySpriteImages.set(f.id, img);
+    wireExplorerAsset(img, rel, `facility_${f.id}`, () => {});
+  }
 }
 
 function startPortraitSpriteLoad() {
-  // 不再启动时全量加载；改为在打开 NPC 对话时按需加载
+  for (const [id, rel] of Object.entries(PORTRAIT_SPRITE_PATH)) {
+    const img = new Image();
+    portraitSpriteImages.set(id, img);
+    wireExplorerAsset(img, rel, `portrait_${id}`, () => {
+      if (storyPortraitKind === "npc" && storyPortraitId === id) {
+        setStoryPortrait("npc", id, storyPortraitLabel);
+      }
+    });
+  }
 }
 
 const WORKSHOP_DEVICE_ICON = {
@@ -643,7 +656,72 @@ function startMapTileTexturesLoad() {
   startExplorerIconLoad();
 }
 
-startMapTileTexturesLoad();
+// ── 预加载器：加载页 + 全部资源预加载 ──
+(function initPreloader() {
+  const screen = document.getElementById("preloader");
+  const bar = document.getElementById("preloader-bar");
+  const text = document.getElementById("preloader-text");
+  if (!screen || !bar || !text) {
+    startMapTileTexturesLoad();
+    return;
+  }
+
+  // 计算资源基础 URL
+  const baseEl = document.querySelector('script[type="module"][src*="main.js"]');
+  const base = baseEl?.src || (typeof import.meta !== "undefined" && import.meta.url) || window.location.href;
+
+  // 收集所有图片 URL
+  const tileRel = [
+    "./assets/tile_void.jpg", "./assets/tile_road.jpg",
+    "./assets/tile_build.jpg", "./assets/walkable_floor_tile.png",
+  ];
+  const facilityIds = FACILITIES.map((f) => f.id);
+  const portraitRel = Object.values(PORTRAIT_SPRITE_PATH);
+  const iconRel = Object.values(EXPLORER_ICON_PATH);
+
+  const urls = [
+    ...tileRel.map((r) => new URL(r, base).href),
+    ...facilityIds.map((id) => new URL(`./assets/facilities/${id}.png`, base).href),
+    ...portraitRel.map((r) => new URL(r, base).href),
+    ...iconRel.map((r) => new URL(r, base).href),
+  ];
+
+  let loaded = 0;
+  const total = urls.length;
+
+  function updateProgress() {
+    const pct = Math.round((loaded / total) * 100);
+    bar.style.width = pct + "%";
+    text.textContent = `正在加载资源... ${loaded}/${total}`;
+  }
+
+  function onAllDone() {
+    bar.style.width = "100%";
+    text.textContent = "初始化完成";
+    setTimeout(() => {
+      screen.classList.add("preloader--done");
+      setTimeout(() => screen.remove(), 700);
+    }, 200);
+    startMapTileTexturesLoad();
+  }
+
+  updateProgress();
+
+  if (urls.length === 0) {
+    onAllDone();
+    return;
+  }
+
+  for (const url of urls) {
+    const img = new Image();
+    img.onload = img.onerror = () => {
+      loaded++;
+      updateProgress();
+      if (loaded >= total) onAllDone();
+    };
+    img.src = url;
+  }
+})();
 
 function ensureTileTerrainCanvas() {
   if (tileTerrainCanvas) return tileTerrainCanvas;

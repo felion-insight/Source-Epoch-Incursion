@@ -8,13 +8,26 @@
     <link rel="icon" href="assets/icons/favicon.png" type="image/png" />
     <!-- 背景音乐（用户首次交互后自动播放） -->
     <audio id="bgm" src="sound/background.mp3" loop preload="auto"></audio>
-    <link rel="stylesheet" href="styles.css?v=20260530_opt" />
+    <link rel="stylesheet" href="styles.css?v=20260530_pre" />
     <link rel="preload" as="image" href="assets/tile_void.jpg" />
     <link rel="preload" as="image" href="assets/tile_road.jpg" />
     <link rel="preload" as="image" href="assets/tile_build.jpg" />
     <link rel="preload" as="image" href="assets/walkable_floor_tile.png" />
   </head>
   <body class="explorer-app">
+    <!-- ── 加载页：预加载所有资源前显示进度条 ── -->
+    <div id="preloader" class="preloader" aria-label="游戏加载中">
+      <div class="preloader-content">
+        <h1 class="preloader-title">源纪元</h1>
+        <p class="preloader-subtitle">岸线侵入</p>
+        <div class="preloader-bar-track">
+          <div class="preloader-bar-fill" id="preloader-bar"></div>
+        </div>
+        <div class="preloader-text" id="preloader-text">正在初始化...</div>
+      </div>
+      <div class="preloader-bg"></div>
+    </div>
+
     <aside id="objectives-panel" class="objectives-panel" aria-label="任务目标">
       <div id="sandbox-dock" class="sandbox-dock hidden" aria-label="静默切换"></div>
       <div class="objectives-tabs">
@@ -72,6 +85,6 @@
       // ★ 后端 API 地址（已配置为 Railway 部署地址）★
       window.__GAME_API_BASE__ = "https://source-epoch-incursion-production.up.railway.app";
     </script>
-    <script type="module" src="main.js?v=20260530_opt"></script>
+    <script type="module" src="main.js?v=20260530_pre"></script>
   </body>
 </html>
