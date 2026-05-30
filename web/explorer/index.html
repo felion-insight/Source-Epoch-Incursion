@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <meta name="theme-color" content="#070a10" />
     <title>源纪元 · 岸线侵入 — 基地大地图探索</title>
-    <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="styles.css?v=explorer_api_banner_detail_20260517" />
+    <link rel="icon" href="assets/icons/favicon.png" type="image/png" />
+    <link rel="stylesheet" href="styles.css?v=ui_beautify_sb_20260530" />
     <link rel="preload" as="image" href="assets/tile_void.jpg" />
     <link rel="preload" as="image" href="assets/tile_road.jpg" />
     <link rel="preload" as="image" href="assets/tile_build.jpg" />
@@ -14,12 +14,7 @@
   </head>
   <body class="explorer-app">
     <aside id="objectives-panel" class="objectives-panel" aria-label="任务目标">
-      <div class="objectives-panel__top-tools">
-        <button type="button" id="sandbox-playbook-open" class="sandbox-playbook-openchip" aria-expanded="false">
-          静默玩法教程
-        </button>
-      </div>
-      <div id="sandbox-dock" class="sandbox-dock hidden" aria-label="静默运营"></div>
+      <div id="sandbox-dock" class="sandbox-dock hidden" aria-label="静默切换"></div>
       <div class="objectives-tabs">
         <button type="button" class="objectives-tab active" data-tab="current">当前</button>
         <button type="button" class="objectives-tab" data-tab="upcoming">后续</button>
@@ -64,6 +59,15 @@
         </div>
       </div>
     </div>
-    <script type="module" src="main.js?v=fetch_json_get_no_preflight_20260517"></script>
+    <!-- ── 游戏 API 后端地址配置 ──────────────────────────────
+       部署到 Netlify 时，将下方地址改为你的后端 API 服务器地址。
+       优先级：URL 参数 ?api=  >  此处配置  >  默认 127.0.0.1:8787
+       示例：window.__GAME_API_BASE__ = "https://your-api.railway.app";
+    ──────────────────────────────────────────────────────────── -->
+    <script>
+      // ★ 部署时修改此处为你的后端 API 地址 ★
+      // window.__GAME_API_BASE__ = "https://your-backend-server.com";
+    </script>
+    <script type="module" src="main.js?v=ui_beautify_sb_20260530"></script>
   </body>
 </html>

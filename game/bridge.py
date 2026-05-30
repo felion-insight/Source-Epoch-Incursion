@@ -117,7 +117,7 @@ def npc_agent_for(sess: GameSession, npc_id: str) -> NpcAgent:
 def narrative_story_beat_system(sess: GameSession) -> str:
     """与当前 story 节点对齐的系统提示块，注入 NPC 生成。"""
     n = sess.current_node()
-    return story_beat_system_zh(n.id, n.title_zh, n.must_deliver_zh)
+    return story_beat_system_zh(n.id, n.title_zh, sess.get_active_must_deliver_zh())
 
 
 def record_player_line(sess: GameSession, npc_id: str, summary: str) -> None:
@@ -126,6 +126,94 @@ def record_player_line(sess: GameSession, npc_id: str, summary: str) -> None:
     st = sess.get_memory_store(npc_id)
     st.record_turn(InteractionTurn("player", summary))
     sess.save_memory_store(st)
+
+
+# ── 自由文本对话桥接 ────────────────────────────────────────────
+
+# 选项自然浮现的轮次阈值：对话进行到此轮次后，前端会将剧情选项显示在对话界面中
+# 玩家可以随时点击选项来推进剧情，同时保留自由输入能力
+CHOICE_UNVEIL_TURNS = 5
+
+
+def get_conversation_turn_limits(sess: "GameSession") -> tuple[int, int]:
+    """根据当前剧情进度（act）返回 (温和引导轮次, 强制结束轮次)。
+
+    剧情越往后，对话轮数上限越低——玩家已熟悉世界观，NPC 也有更紧迫的任务。
+    """
+    try:
+        node = sess.current_node()
+        act = getattr(node, "act", "act1")
+    except Exception:
+        act = "act1"
+
+    limits = {
+        "prologue": (4, 7),   # 序章：新手引导期，稍宽松但不至于让玩家无话可说
+        "act1":     (3, 6),   # 第一幕：适中
+        "act2":     (3, 5),   # 第二幕：局势趋紧
+        "act3":     (2, 4),   # 第三幕：冲突升级，简短交流
+        "finale":   (2, 3),   # 终局：局势紧张，直奔主题
+    }
+    return limits.get(act, (6, 9))
+
+
+def start_conversation(sess: GameSession, npc_id: str) -> None:
+    """标记自由对话开始，绑定当前剧情节点。"""
+    sess.active_conversation_npc = npc_id
+    sess.active_conversation_node = sess.current_node_id
+    sess.conversation_turn_count = 0
+    sess.conversation_off_topic_count = 0
+    sess.conversation_history = []
+
+
+def end_conversation(sess: GameSession, closed_by_npc: bool = False) -> None:
+    """清理自由对话状态。closed_by_npc 表示 NPC 主动结束了对话（不允许再发起）。"""
+    if closed_by_npc and sess.active_conversation_npc:
+        # 记录：该 NPC 在当前节点主动结束了对话，短期内不允许再次发起
+        if not hasattr(sess, "conversation_closed_by_npc"):
+            sess.conversation_closed_by_npc = {}
+        sess.conversation_closed_by_npc[sess.active_conversation_npc] = sess.active_conversation_node
+    sess.active_conversation_npc = None
+    sess.active_conversation_node = None
+    sess.conversation_turn_count = 0
+    sess.conversation_off_topic_count = 0
+    sess.conversation_history = []
+
+
+def can_start_conversation_with(sess: GameSession, npc_id: str) -> tuple[bool, str | None]:
+    """检查是否允许与该 NPC 开始自由对话。返回 (可以对话, 拒绝原因)。"""
+    node_id = sess.current_node_id
+    closed = getattr(sess, "conversation_closed_by_npc", {})
+    if closed.get(npc_id) == node_id:
+        return False, "该去工作了"
+    return True, None
+
+
+def apply_chat_emotional_shift(sess: GameSession, npc_id: str, emotional_shift: dict[str, float]) -> dict[str, float]:
+    """将 AI 返回的情绪变化应用到 NPC 记忆存储，返回应用后的值。"""
+    store = sess.get_memory_store(npc_id)
+    trust_d = float(emotional_shift.get("trust", 0))
+    aff_d = float(emotional_shift.get("affinity", 0))
+    fear_d = float(emotional_shift.get("fear", 0))
+
+    store.emotional.trust = max(0.0, min(100.0, store.emotional.trust + trust_d))
+    store.emotional.affinity = max(0.0, min(100.0, store.emotional.affinity + aff_d))
+    store.emotional.fear = max(0.0, min(100.0, store.emotional.fear + fear_d))
+    sess.save_memory_store(store)
+
+    return {
+        "trust": store.emotional.trust,
+        "affinity": store.emotional.affinity,
+        "fear": store.emotional.fear,
+    }
+
+
+def narrative_chat_choice_labels(sess: GameSession) -> list[dict[str, str]] | None:
+    """获取当前节点的可选项标签（供 AI 提示注入）。"""
+    node = sess.current_node()
+    active = sess.get_active_choices()
+    if not active:
+        return None
+    return [{"id": c.id, "label_zh": c.label_zh} for c in active]
 
 
 def source_session_from(sess: GameSession) -> SourceSession:

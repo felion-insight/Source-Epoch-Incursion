@@ -5,12 +5,22 @@ from __future__ import annotations
 from .session import GameSession
 from .sim_sandbox import sandbox_policy
 
-# 第一幕「升级优先」：在会议室（指挥中心）或对应设施触发与 01-02 相同的三选一
-FACILITY_TO_UPGRADE_CHOICE: dict[str, str] = {
-    "comm": "upg_comm",
-    "mine": "upg_mine",
-    "lab": "upg_lab",
+# 剧情节点 / 设施 → 选择 ID 的映射（玩家走访对应设施时触发单一确认按钮）
+# 指挥中心（command）通常可展示全部选项（UI 层通过 node_id 判断）
+NODE_FACILITY_CHOICES: dict[str, dict[str, str]] = {
+    "01-02": {
+        "comm": "upg_comm",
+        "mine": "upg_mine",
+        "lab": "upg_lab",
+    },
+    "PRO-02": {
+        "defense": "pro02_defense",
+        "lab": "pro02_rescue",
+    },
 }
+
+# 向后兼容：保留旧名称为 01-02 映射
+FACILITY_TO_UPGRADE_CHOICE: dict[str, str] = NODE_FACILITY_CHOICES.get("01-02", {})
 
 # 设施上的「经营深化」标签（与 narrative_ai.management 键一致）
 
@@ -102,12 +112,13 @@ def narrative_gate_management_decision_zh(sess: GameSession, tag: str) -> str | 
             return "静默运营期内暂不开放该项立项。"
         return None
 
+    nid = sess.current_node_id
+    # 节点正在等待设施决策时，禁止单独立项
+    if nid in NODE_FACILITY_CHOICES:
+        return "当前为剧情决策节点：请先在指挥中心或对应设施内完成剧情选项，勿单独深化立项。"
     fid = MANAGEMENT_TAG_HOME_FACILITY.get(t)
     if not fid:
         return None
-    nid = sess.current_node_id
-    if nid == "01-02":
-        return "当前为「升级优先」剧情节点：请先在指挥中心或对应设施内完成三选一剧情选项，勿单独深化立项。"
     if not facility_relevant_to_node(sess, fid):
         return "当前剧情阶段与该设施的经营决议无关，无法立项。"
     if t == "comm_array_encrypt" and nid != "01-05":
@@ -116,9 +127,8 @@ def narrative_gate_management_decision_zh(sess: GameSession, tag: str) -> str | 
 
 
 def upgrade_choice_for_facility(sess: GameSession, facility_id: str) -> str | None:
-    if sess.current_node_id != "01-02":
-        return None
-    return FACILITY_TO_UPGRADE_CHOICE.get(facility_id)
+    """返回走访 facility_id 时对应的单一选择 ID（用于「在此确认」按钮），无映射则返回 None。"""
+    return NODE_FACILITY_CHOICES.get(sess.current_node_id, {}).get(facility_id)
 
 
 def npc_is_current_focus(sess: GameSession, npc_id: str) -> bool:
@@ -127,8 +137,10 @@ def npc_is_current_focus(sess: GameSession, npc_id: str) -> bool:
 
 def facility_relevant_to_node(sess: GameSession, facility_id: str) -> bool:
     nid = sess.current_node_id
-    if nid == "01-02":
-        return facility_id in FACILITY_TO_UPGRADE_CHOICE or facility_id == "command"
+    # 节点有设施→选择映射时，直接根据映射判相关
+    mapping = NODE_FACILITY_CHOICES.get(nid)
+    if mapping:
+        return facility_id in mapping or (facility_id == "command")
     if nid in LISTEN_ANCHOR_NODES:
         return facility_id == "listen"
     anchor_map: dict[str, frozenset[str]] = {

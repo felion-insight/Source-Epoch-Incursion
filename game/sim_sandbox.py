@@ -157,6 +157,10 @@ def economy_tick_world_day(sess: object) -> dict[str, object]:
 
     accrue_facility_idle_stash(sess)
 
+    from .underground_workshop import workshop_daily_pass
+
+    workshop_daily_pass(sess)
+
     setattr(sess, "sandbox_npc_calls_this_day", 0)
 
     summary = "; ".join([b for b in bullets if b])
@@ -183,4 +187,22 @@ def next_world_day(sess: object) -> dict[str, object]:
 
     ex_settled = settle_expedition_arrivals(sess)
     eco = economy_tick_world_day(sess)
+
+    # 自动休整到期恢复主线（静默过渡，不额外广播）
+    auto_resume = bool(getattr(sess, "sandbox_auto_resume", False))
+    if auto_resume:
+        resume_day = getattr(sess, "sandbox_auto_resume_day", None)
+        if resume_day is not None and int(getattr(sess, "world_day", 1)) >= int(resume_day):
+            from .bridge import flush_management_queue
+
+            drained, _ = flush_management_queue(sess)
+            sess.story_phase = "StoryBeat"
+            sess.sandbox_enter_world_day = None
+            sess.sandbox_min_world_days = None
+            sess.sandbox_auto_resume = False
+            sess.sandbox_auto_resume_day = None
+            if drained:
+                append_bulletin_zh(sess, f"基地运营调整：决算队列落地 {len(drained)} 项。")
+            # 不额外播报"恢复主线"，让玩家自然发现剧情已可用
+
     return {"world_day_after": sess.world_day, "expeditions_settled": ex_settled, "economy_tick": eco}

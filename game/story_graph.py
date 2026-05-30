@@ -36,6 +36,8 @@ class NodeSpec:
     skip_to: str | None
     player_objectives_zh: list[str] | None = None
     memory_flash_lines_zh: list[str] | None = None
+    # 多轮固定选项对话（代替自由文本输入）；每轮含 NPC 台词与玩家选项
+    pre_dialogue: list[dict[str, object]] | None = None
     # 静默运营 automation：在进入该节点并完成 on_enter_* 后对剧情相位赋值（对齐 docs/sim_*）。
     sandbox_enter_after_beat: bool = False
     sandbox_enter_min_world_days: int | None = None
@@ -77,6 +79,7 @@ def _parse_node(nid: str, raw: dict[str, Any]) -> NodeSpec:
         memory_flash_lines_zh=list(raw["memory_flash_lines_zh"])
         if raw.get("memory_flash_lines_zh")
         else None,
+        pre_dialogue=list(raw["pre_dialogue"]) if raw.get("pre_dialogue") else None,
         sandbox_enter_after_beat=bool(raw.get("sandbox_enter_after_beat", False)),
         sandbox_enter_min_world_days=(
             None

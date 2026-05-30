@@ -12,5 +12,8 @@ foreach ($conn in $listeners) {
 }
 Start-Sleep -Milliseconds 700
 Set-Location -LiteralPath $PSScriptRoot
+# 默认开启开发者调试 API（$env:GAME_DEBUG_API=0 可关闭）
+$env:GAME_DEBUG_API = "1"
 Write-Host "[restart_game_api] cwd=$(Get-Location)"
+Write-Host "[restart_game_api] GAME_DEBUG_API=$env:GAME_DEBUG_API"
 python -u -m game

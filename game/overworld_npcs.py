@@ -50,8 +50,10 @@ def npc_visible_on_map(sess: GameSession, npc_id: str) -> bool:
 
     if npc_id == "echo_7":
         # 文档：同调>30% 后可在屏幕出现；通讯阵列加密线（01-05）或第一幕大事件后也可出现
+        # 补充：若当前节点的 npc_focus 包含 echo_7，则剧情焦点即回声-7，理应可见
         return (
-            sess.plot.has("echo_route_hint")
+            npc_id in focus
+            or sess.plot.has("echo_route_hint")
             or float(sess.hidden.SYNC) > 30
             or _done(sess, "01-07")
             or sess.conspiracy_tier_unlocked >= 1
@@ -122,7 +124,7 @@ def opening_player_context(sess: GameSession, npc_id: str, *, story_focus: bool)
     sheet = get_npc(npc_id)
     name = str(sheet.get("display_name", npc_id))
     n = sess.current_node()
-    must = "\n".join(f"- {t}" for t in n.must_deliver_zh)
+    must = "\n".join(f"- {t}" for t in sess.get_active_must_deliver_zh())
     store = sess.get_memory_store(npc_id)
     trust = float(store.emotional.trust)
     tier = int(sess.conspiracy_tier_unlocked)

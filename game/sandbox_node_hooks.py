@@ -35,6 +35,5 @@ def apply_node_sandbox_automation(sess: "GameSession", node: NodeSpec) -> None:
 
     append_bulletin_zh(
         sess,
-        f"剧情告一段落：系统自动进入静默运营 #{sess.sandbox_generation}。"
-        f"当前节点锚点「{node.id}」，可通过大地图决算与远征消化压力。",
+        f"一段波折暂告平息——基地进入日常运营节律。",
     )

@@ -33,15 +33,22 @@ def player_visible_objectives(node: NodeSpec) -> list[str]:
     ]
 
 
-def prepend_sandbox_objectives_banner(phase: str, objectives: list[str]) -> list[str]:
+def prepend_sandbox_objectives_banner(phase: str, objectives: list[str], sess: GameSession | None = None) -> list[str]:
     """当 story_phase == Sandbox 时为 HUD 增补运营向引导，不改变节点 JSON。"""
     if str(phase or "").strip() != "Sandbox":
         return objectives
-    banner_zh = (
-        "【静默运营期——基地玩法主导】主线推进已冻结。请以大面板「基地日 +1」驱动时钟："
-        "每一日会结转物资与岸线压力、重置 NPC 交流配额；「决算」排队设施立项；签发野外远征归国入账；侧栏可进行「地图资源行动」自取四类资源。"
-        "准备回到剧情时手动「结束静默」。"
-    )
+    auto_resume = bool(getattr(sess, "sandbox_auto_resume", False)) if sess else False
+    if auto_resume:
+        banner_zh = (
+            "【休整期】剧情暂告段落，基地进入日常运营节奏。"
+            "经营基地核心工坊、签发远征、调配资源——局势自有其节律。"
+        )
+    else:
+        banner_zh = (
+            "【静默运营期——基地玩法主导】主线推进已冻结。请以大面板「基地日 +1」驱动时钟："
+            "每一日会结转物资与岸线压力、重置 NPC 交流配额；「决算」排队设施立项；签发野外远征归国入账；侧栏可进行「地图资源行动」自取四类资源。"
+            "准备回到剧情时手动「结束静默」。"
+        )
     return [banner_zh, *objectives]
 
 
@@ -50,6 +57,12 @@ def objectives_upcoming_blurb(sess: GameSession) -> str | None:
     「后续」区：不列出未发生节点的标题或必达条，仅用分支数量/结构作元信息。
     """
     if str(getattr(sess, "story_phase", "StoryBeat") or "").strip() == "Sandbox":
+        auto_resume = bool(getattr(sess, "sandbox_auto_resume", False))
+        if auto_resume:
+            return (
+                "休整期中：请以左侧「基地日推进」为主节奏；经营工坊、签发远征、调配资源。"
+                "局势自有其节律。"
+            )
         return (
             "静默期中：请以左侧「基地日推进」为主线节拍；侧栏可进行地图资源行动；野外远征归国与基地日结转绑定。"
             "不向玩家预告下一主线节点。"

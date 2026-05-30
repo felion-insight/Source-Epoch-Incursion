@@ -43,14 +43,32 @@ const ROADS = [
   { width: 60, points: [[2860, 2860], [2460, 3220]] },
 ];
 
+/** 工坊入口已整合至基地核心设施交互中 */
+const MAP_POIS = [];
+
 /**
- * zone：片区示意；core：阻挡行走的建筑核心。设施 id 与 game/narrative_map.py API 一致（comm/mine/lab…）。
+ * zone：片区示意；core：占地碰撞与交互（格网内 T_BUILD，须沿路缘贴近）。
+ * 可选 sprite：仅绘制用；anchor：bottom-center（底边居中）、bottom-left（底边左对齐 core，不向西侵占道路）。
+ * 设施 id 与 game/narrative_map.py API 一致（comm/mine/lab…）。
  */
 /** 主纵街 x=2860 宽 96 → 东缘 2908；主轴 y=2140 宽 84 → 北缘 2098、南缘 2182。建筑 core 与路缘留约 4 单位间隙。 */
 const FACILITIES = [
   { id: "sunk_lab", name: "沉没实验室", zone: { x: 2552, y: 280, w: 1080, h: 480 }, core: { x: 2912, y: 440, w: 460, h: 260 } },
-  { id: "mine_ruins", name: "废弃矿场表层", zone: { x: 2532, y: 820, w: 1160, h: 500 }, core: { x: 2912, y: 980, w: 480, h: 300 } },
-  { id: "helipad", name: "停机坪", zone: { x: 3320, y: 1000, w: 560, h: 360 }, core: { x: 3520, y: 1120, w: 260, h: 160 } },
+  {
+    id: "mine_ruins",
+    name: "废弃矿场表层",
+    zone: { x: 2532, y: 820, w: 1160, h: 500 },
+    /** 左缘对齐原 2912，不侵占主纵街（x≈2860 路宽 96）；贴图向东上展开 */
+    core: { x: 2912, y: 960, w: 560, h: 320 },
+    sprite: { w: 720, h: 400, anchor: "bottom-left" },
+  },
+  {
+    id: "helipad",
+    name: "停机坪",
+    zone: { x: 3320, y: 1000, w: 560, h: 360 },
+    core: { x: 3450, y: 1060, w: 400, h: 220 },
+    sprite: { w: 520, h: 290, anchor: "bottom-center" },
+  },
   { id: "echo_site", name: "回声集团信标塔", zone: { x: 400, y: 1550, w: 640, h: 580 }, core: { x: 620, y: 1794, w: 320, h: 280 } },
   { id: "parliament_ruin", name: "议会前哨站废墟", zone: { x: 5040, y: 1574, w: 660, h: 600 }, core: { x: 5280, y: 1794, w: 340, h: 280 } },
   { id: "defense", name: "海岸防线", zone: { x: 2088, y: 1554, w: 920, h: 640 }, core: { x: 2388, y: 1794, w: 420, h: 300 } },
@@ -62,6 +80,27 @@ const FACILITIES = [
   { id: "mine", name: "源矿采集点", zone: { x: 2512, y: 2900, w: 980, h: 640 }, core: { x: 2912, y: 3140, w: 460, h: 300 } },
   { id: "purify_grove", name: "净空会圣树", zone: { x: 2572, y: 3620, w: 840, h: 480 }, core: { x: 2912, y: 3800, w: 380, h: 280 } },
 ];
+
+/** 设施碰撞/交互占地（始终为 core） */
+function facilityFootprint(f) {
+  return f.core;
+}
+
+/** 设施贴图绘制框（有 sprite 时按锚点相对 core 展开） */
+function facilityDrawRect(f) {
+  const c = f.core;
+  const sp = f.sprite;
+  if (!sp) return { x: c.x, y: c.y, w: c.w, h: c.h };
+  const w = sp.w ?? c.w;
+  const h = sp.h ?? c.h;
+  if (sp.anchor === "bottom-center") {
+    return { x: c.x + c.w * 0.5 - w * 0.5, y: c.y + c.h - h, w, h };
+  }
+  if (sp.anchor === "bottom-left") {
+    return { x: c.x, y: c.y + c.h - h, w, h };
+  }
+  return { x: c.x, y: c.y, w, h };
+}
 
 function distPointToSegmentSquared(px, py, x1, y1, x2, y2) {
   const vx = x2 - x1;
@@ -369,7 +408,7 @@ function buildTileMap() {
       const cy = cell.y + TILE * 0.5;
       let t = T_VOID;
       for (const f of FACILITIES) {
-        if (tileCenterInAabb(cx, cy, f.core)) {
+        if (tileCenterInAabb(cx, cy, facilityFootprint(f))) {
           t = T_BUILD;
           break;
         }
@@ -471,11 +510,125 @@ function wireTileImage(img, relativePath, warnLabel) {
   if (img.complete && img.naturalWidth > 0) onReady();
 }
 
+/** 设施大地图 sprite：web/explorer/assets/facilities/{id}.png */
+const facilitySpriteImages = new Map();
+
+/** NPC / 设施对话立绘：web/explorer/assets/portraits/ */
+const portraitSpriteImages = new Map();
+
+const PORTRAIT_SPRITE_PATH = {
+  karen: "./assets/portraits/karen.png",
+  dr_lin: "./assets/portraits/dr_lin.jpg",
+  chubby: "./assets/portraits/chubby.png",
+  klein: "./assets/portraits/klein.png",
+  echo_7: "./assets/portraits/echo_7.jpg",
+  jin: "./assets/portraits/jin.jpg",
+  elizabeth: "./assets/portraits/elizabeth.jpg",
+  source: "./assets/portraits/source.png",
+};
+
+let storyPortraitKind = "";
+let storyPortraitId = "";
+let storyPortraitLabel = "";
+
+function wireExplorerAsset(img, relativePath, warnLabel, onReady) {
+  const href = new URL(relativePath, tileAssetBaseUrl()).href;
+  const ready = () => {
+    const dec = img.decode?.();
+    if (dec && typeof dec.then === "function") dec.then(onReady, onReady);
+    else onReady?.();
+  };
+  img.onload = ready;
+  img.onerror = () => {
+    console.warn(`[explorer] 资源加载失败 [${warnLabel}]:`, href);
+    onReady?.();
+  };
+  img.src = href;
+  if (img.complete && img.naturalWidth > 0) ready();
+}
+
+function startFacilitySpriteLoad() {
+  for (const f of FACILITIES) {
+    const rel = `./assets/facilities/${f.id}.png`;
+    const img = new Image();
+    facilitySpriteImages.set(f.id, img);
+    wireExplorerAsset(img, rel, `facility_${f.id}`, () => {});
+  }
+}
+
+function startPortraitSpriteLoad() {
+  for (const [id, rel] of Object.entries(PORTRAIT_SPRITE_PATH)) {
+    const img = new Image();
+    portraitSpriteImages.set(id, img);
+    wireExplorerAsset(img, rel, `portrait_${id}`, () => {
+      if (storyPortraitKind === "npc" && storyPortraitId === id) {
+        setStoryPortrait("npc", id, storyPortraitLabel);
+      }
+    });
+  }
+}
+
+const WORKSHOP_DEVICE_ICON = {
+  miner: "采",
+  smelter: "冶",
+  assembler: "组",
+  refiner: "炼",
+  printer: "印",
+  power_plant: "电",
+  power_core: "核",
+  storage: "仓",
+};
+
+/** 与 tools/sync_explorer_icons.py 输出一致：web/explorer/assets/icons/{name}.png */
+const EXPLORER_ICON_PATH = {
+  miner: "./assets/icons/miner.png",
+  smelter: "./assets/icons/smelter.png",
+  assembler: "./assets/icons/assembler.png",
+  refiner: "./assets/icons/refiner.png",
+  printer: "./assets/icons/printer.png",
+  power_plant: "./assets/icons/power_plant.png",
+  power_core: "./assets/icons/power_core.png",
+  storage: "./assets/icons/storage.png",
+  resource_energy: "./assets/icons/resource_energy.png",
+  resource_parts: "./assets/icons/resource_parts.png",
+  resource_food: "./assets/icons/resource_food.png",
+  resource_medical: "./assets/icons/resource_medical.png",
+  resource_intel: "./assets/icons/resource_intel.png",
+  tab_current: "./assets/icons/tab_current.png",
+  tab_upcoming: "./assets/icons/tab_upcoming.png",
+  tab_management: "./assets/icons/tab_management.png",
+  tab_explore: "./assets/icons/tab_explore.png",
+  tab_dossier: "./assets/icons/tab_dossier.png",
+  tab_tutorial: "./assets/icons/tab_tutorial.png",
+  favicon: "./assets/icons/favicon.png",
+};
+
+const OBJECTIVES_TAB_ICON_KEY = {
+  current: "tab_current",
+  upcoming: "tab_upcoming",
+  mgmt: "tab_management",
+  explore: "tab_explore",
+  dossier: "tab_dossier",
+};
+
+const RESOURCE_STRIP_ICON_KEY = {
+  energy: "resource_energy",
+  food: "resource_food",
+  medical: "resource_medical",
+  intel: "resource_intel",
+  parts: "resource_parts",
+};
+
+const explorerIconImages = new Map();
+
 function startMapTileTexturesLoad() {
   wireTileImage(voidTileTexture, "./assets/tile_void.jpg", "void");
   wireTileImage(roadTileTexture, "./assets/tile_road.jpg", "road");
   wireTileImage(buildTileTexture, "./assets/tile_build.jpg", "build");
   wireTileImage(roadTileFallbackTexture, "./assets/walkable_floor_tile.png", "road_fallback");
+  startFacilitySpriteLoad();
+  startPortraitSpriteLoad();
+  startExplorerIconLoad();
 }
 
 startMapTileTexturesLoad();
@@ -672,7 +825,11 @@ function computeNextStepGuide(state) {
     const h = hints[fid];
     if (h?.upgrade_choice_id) {
       const c = facilityZoneCenter(fid);
-      return c ? { wx: c.wx, wy: c.wy, label_zh: `前往「${c.name}」确认升级倾向` } : null;
+      if (!c) continue;
+      // 尝试用选择标签替换笼统文案
+      const pick = (nar.choices || []).find((ch) => ch.id === h.upgrade_choice_id);
+      const action = pick ? `确认：${pick.label_zh}` : "确认优先方向";
+      return { wx: c.wx, wy: c.wy, label_zh: `前往「${c.name}」${action}` };
     }
   }
 
@@ -693,6 +850,9 @@ function computeNextStepGuide(state) {
       if (!c) continue;
       if (nar.node_id === "PRO-04" || nar.node_id === "03-03") {
         return { wx: c.wx, wy: c.wy, label_zh: `前往「${c.name}」与源交互 / 推进低语节点` };
+      }
+      if (nar.node_id === "02-02") {
+        return { wx: c.wx, wy: c.wy, label_zh: `前往「${c.name}」——记忆闪回将自动触发` };
       }
       return { wx: c.wx, wy: c.wy, label_zh: `前往「${c.name}」推进当前剧情节点` };
     }
@@ -935,7 +1095,7 @@ function facilityAnchor(fid, seed = 0, npcId = "") {
 }
 
 /**
- * 根据当前游戏时刻与存档状态计算 NPC 日程目标点（片区内锚点）；实际位置由 stepAllNpcBodies 走向目标。
+ * 根据当前游戏时刻与存档状态计算 NPC 日程目标点（片区内锚点）；实际位移由 stepAllNpcBodies（与玩家同速、匀速）走向该点。
  * @returns {{ pos: Record<string, {x:number,y:number}>, meta: Record<string, boolean> }}
  */
 function scheduledNpcWorldPositions(state) {
@@ -1000,6 +1160,8 @@ function scheduledNpcWorldPositions(state) {
 
   pos.elizabeth = facilityAnchor("comm", hashHour("elizabeth", hour), "elizabeth");
   pos.klein = facilityAnchor("sunk_lab", 904577, "klein");
+  // echo_7（电子界面实体）：当可见时附着在通讯阵列设施附近
+  pos.echo_7 = facilityAnchor("comm", hashHour("echo_7", hour), "echo_7");
 
   return { pos, meta };
 }
@@ -1025,7 +1187,14 @@ function maybeEchoFacilityPing(facilityId) {
 function effectiveNpcs() {
   const srv = latestState?.overworld_npcs;
   const { pos, meta } = npcScheduleSnapshot;
-  const base = NPCS.filter((n) => n.id !== "echo_7");
+  const base = NPCS.filter((n) => {
+    // echo_7 仅当服务端显式返回 visible=true 时纳入地图渲染
+    if (n.id === "echo_7") {
+      const row = srv?.find((r) => r.id === "echo_7");
+      return !!(row && row.visible === true);
+    }
+    return true;
+  });
   const list = !srv?.length
     ? base.map((n) => ({ ...n }))
     : base.filter((n) => srv.find((r) => r.id === n.id)?.visible !== false).map((n) => {
@@ -1056,9 +1225,12 @@ function incursionAlertBlurb() {
 /** 出生在主轴交叉口南侧空地：须在 command.core 之外（核心框约 x2912–3292 y1794–2094） */
 const PLAYER = { r: ENTITY_R, speed: 340, x: 2860, y: 2120 };
 
-/** 去掉尾部 /，避免出现 //api/... 导致服务端路径与路由不一致（404） */
+/** 去掉尾部 /，避免出现 //api/... 导致服务端路径与路由不一致（404）
+ *  优先级：URL 参数 ?api= > window.__GAME_API_BASE__ > 默认本地地址 */
 const API_BASE = (
-  new URLSearchParams(location.search).get("api") || "http://127.0.0.1:8787"
+  new URLSearchParams(location.search).get("api") ||
+  (typeof window !== "undefined" && window.__GAME_API_BASE__) ||
+  "http://127.0.0.1:8787"
 ).replace(/\/+$/, "");
 {
   const el = document.getElementById("api-url");
@@ -1071,7 +1243,9 @@ const sandboxDock = document.getElementById("sandbox-dock");
 
 /** 用 URL 解析拼接，避免 //、缺斜杠、编码等问题 */
 function gameApiUrl(path) {
-  const base = (API_BASE || "").trim().replace(/\/+$/, "") || "http://127.0.0.1:8787";
+  const base = (API_BASE || "").trim().replace(/\/+$/, "") ||
+    (typeof window !== "undefined" && window.__GAME_API_BASE__) ||
+    "http://127.0.0.1:8787";
   const rel = path.startsWith("/") ? path : `/${path}`;
   try {
     return new URL(rel, `${base}/`).href;
@@ -1087,13 +1261,32 @@ const storyBullets = document.getElementById("story-bullets");
 const storyExtras = document.getElementById("story-extras");
 const storyChoices = document.getElementById("story-choices");
 const storyMeta = document.getElementById("story-meta");
+const storySpriteAside = document.querySelector(".story-sprite");
 const storySpriteBlock = document.getElementById("story-sprite-block");
 const storySpriteLabel = document.getElementById("story-sprite-label");
+
+function setStorySpriteColumnVisible(visible) {
+  if (!storySpriteAside) return;
+  storySpriteAside.classList.toggle("hidden", !visible);
+  storySpriteAside.setAttribute("aria-hidden", visible ? "false" : "true");
+}
 const storyTextbox = document.getElementById("story-textbox");
 const storyPanel = document.getElementById("story-panel");
 const storyAiLine = document.getElementById("story-ai-line");
 const storyAdvanceHint = document.getElementById("story-advance-hint");
 const storyClose = document.getElementById("story-close");
+
+// ── 自由文本对话 UI ────────────────────────────────────────────
+let chatInputContainer = null;
+let chatInputField = null;
+let chatSendButton = null;
+let chatEmotionHint = null;
+let chatHistoryDirty = false;
+let chatActiveNpcId = null;
+let chatActiveNarrative = null;
+let chatInputPending = false; // 防止重复发送
+let chatHistoryMessages = []; // 存储完整历史对话消息
+let chatHistoryPanelVisible = false;
 
 /** 递增则丢弃尚未完成的 NPC/源 逐句显示 */
 let npcDialogueRevealGen = 0;
@@ -1180,6 +1373,7 @@ function revealNpcDialogueSequential(el, fullText, opts = {}) {
     if (e.target.closest(".story-choices")) return;
     if (e.target.closest("#story-extras")) return;
     if (e.target.closest("#story-meta")) return;
+    if (e.target.closest("#chat-history-panel")) return;
     advanceOne();
   }
 
@@ -1202,6 +1396,490 @@ function setStoryChoicesLocked(locked) {
     b.disabled = locked;
   }
 }
+
+// ── 自由文本对话 UI ────────────────────────────────────────────
+
+/** 创建对话输入区域 */
+function setupChatUI(npcId, narrative) {
+  teardownChatUI();
+  chatActiveNpcId = npcId;
+  chatActiveNarrative = narrative;
+  chatHistoryMessages = []; // 新对话开始清空历史
+
+  const wrap = document.createElement("div");
+  wrap.id = "story-chat-input";
+  wrap.style.cssText = "margin-top:12px;display:flex;flex-direction:column;gap:6px;";
+
+  // 情绪提示行
+  const hint = document.createElement("div");
+  hint.id = "story-chat-emotion";
+  hint.style.cssText = "font-size:11px;color:#8e9baf;min-height:1.2em;";
+  hint.textContent = "";
+  wrap.appendChild(hint);
+  chatEmotionHint = hint;
+
+  // 输入行
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:6px;";
+
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.id = "story-chat-field";
+  inp.placeholder = "输入你想说的话…（Enter 发送）";
+  inp.style.cssText =
+    "flex:1;background:#141e2b;border:1px solid #2a3a4f;color:#c8d6e5;padding:8px 10px;" +
+    "font-family:inherit;font-size:14px;border-radius:4px;";
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const text = inp.value.trim();
+      if (text) sendChatMessage(text);
+    }
+  });
+  row.appendChild(inp);
+  chatInputField = inp;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "story-chat-send";
+  btn.textContent = "发送";
+  btn.style.cssText =
+    "background:#2a4a6f;border:1px solid #3a5a7f;color:#c8d6e5;padding:8px 14px;" +
+    "cursor:pointer;font-family:inherit;font-size:14px;border-radius:4px;white-space:nowrap;";
+  btn.addEventListener("click", () => {
+    const text = inp.value.trim();
+    if (text) sendChatMessage(text);
+  });
+  row.appendChild(btn);
+  chatSendButton = btn;
+
+  // 历史对话按钮
+  const historyBtn = document.createElement("button");
+  historyBtn.type = "button";
+  historyBtn.id = "story-chat-history";
+  historyBtn.textContent = "历史";
+  historyBtn.style.cssText =
+    "background:#1e2e3f;border:1px solid #2a3a5f;color:#8ea4ba;padding:8px 12px;" +
+    "cursor:pointer;font-family:inherit;font-size:14px;border-radius:4px;white-space:nowrap;";
+  historyBtn.addEventListener("click", toggleChatHistory);
+  row.appendChild(historyBtn);
+
+  wrap.appendChild(row);
+  chatInputContainer = wrap;
+  storyExtras.appendChild(wrap);
+
+  // 初始聚焦
+  setTimeout(() => inp.focus(), 200);
+}
+
+/** 清理对话输入区域 */
+function teardownChatUI() {
+  chatInputPending = false;
+  if (chatInputContainer && chatInputContainer.parentNode) {
+    chatInputContainer.remove();
+  }
+  chatInputContainer = null;
+  chatInputField = null;
+  chatSendButton = null;
+  chatEmotionHint = null;
+  chatActiveNpcId = null;
+  chatActiveNarrative = null;
+  chatHistoryMessages = [];
+  closeChatHistory();
+  // 清理浮现的选项
+  const unveiled = storyExtras.querySelectorAll(".chat-unveil-choice");
+  unveiled.forEach((el) => el.remove());
+}
+
+// ── 自由对话轮次约束常量（与后端 CHOICE_UNVEIL_TURNS 保持一致） ──
+const CHAT_UNVEIL_TURNS = 5;
+
+/** 更新情绪提示（仅显示偏离/情绪信息，不做轮次警告） */
+function updateChatEmotion(data) {
+  if (!chatEmotionHint) return;
+  const parts = [];
+  const offTopic = data.off_topic_count || 0;
+  if (offTopic >= 3) {
+    parts.push("⚠ NPC 对你的频繁偏离感到不耐烦");
+  } else if (offTopic >= 2) {
+    parts.push("• 话题偏离 — 注意对话方向");
+  } else if (offTopic >= 1) {
+    parts.push("• NPC 希望集中精神");
+  }
+  const shift = data.emotional_shift;
+  if (shift && (shift.trust !== 0 || shift.affinity !== 0 || shift.fear !== 0)) {
+    const deltas = [];
+    if (shift.trust < 0) deltas.push(`信任${shift.trust > 0 ? "+" : ""}${shift.trust}`);
+    if (shift.affinity < 0) deltas.push(`好感${shift.affinity > 0 ? "+" : ""}${shift.affinity}`);
+    if (shift.fear > 0) deltas.push(`警惕+${shift.fear}`);
+    if (deltas.length) parts.push("情绪：" + deltas.join(" "));
+  }
+
+  chatEmotionHint.textContent = parts.join("  ·  ") || "";
+  if (offTopic >= 2) {
+    chatEmotionHint.style.color = "#d4a04a";
+  } else if (offTopic >= 1) {
+    chatEmotionHint.style.color = "#a0b0c0";
+  } else {
+    chatEmotionHint.style.color = "#8e9baf";
+  }
+}
+
+/** 检测文本中是否包含告别意图关键词 */
+function detectFarewell(text) {
+  if (!text) return false;
+  const patterns = [
+    "再见", "拜拜", "告辞", "告别", "后会有期", "下次见",
+    "走了", "先走了", "该走了", "回去了", "先回去", "我走了",
+    "不打扰了", "你忙吧", "你去忙", "去忙吧",
+    "我先撤", "撤了", "回头见", "就此别过",
+    "再会", "失陪", "先这样", "就这样吧",
+    "该回去", "回去工作", "回去了",
+    "下次再聊", "晚点再聊", "有空再聊",
+    "我们走", "该出发", "该行动", "照顾好自己",
+    "保重", "多加小心", "路上小心",
+  ];
+  const lower = text.toLowerCase();
+  // 也匹配英文 farewell
+  const enPatterns = ["goodbye", "bye", "farewell", "see you", "take care"];
+  return patterns.some((p) => text.includes(p)) || enPatterns.some((p) => lower.includes(p));
+}
+
+/** 发送对话消息 */
+async function sendChatMessage(playerText) {
+  if (!chatActiveNpcId || chatInputPending) return;
+  chatInputPending = true;
+
+  // 隐藏对话框（NPC 说话时不显示输入区域）
+  if (chatInputContainer) chatInputContainer.style.display = "none";
+
+  // 显示玩家消息
+  addChatBubble("player", playerText);
+  storyAiLine.textContent = "…";
+
+  let conversationWasClosed = false;
+
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/npc/chat"), {
+      method: "POST",
+      body: JSON.stringify({
+        npc_id: chatActiveNpcId,
+        player_text: playerText,
+        action: "send",
+      }),
+    });
+    latestState = data;
+    // 自由对话后立即保存到 localStorage
+    persistSessionToLocalStorage();
+
+    // ── 双向告别兜底检测：即使 AI 没返回 resolved/close_signal，若双方都说了告别语也自动关闭 ──
+    const playerFarewell = detectFarewell(playerText);
+    const npcFarewell = detectFarewell(data.npc_text || "");
+    const mutualFarewell = playerFarewell && npcFarewell && !data.conversation_closed && !data.story_resolved;
+    if (mutualFarewell) {
+      data.conversation_closed = true; // 强制标记为关闭
+    }
+
+    // ── NPC 主动结束对话：立即禁用输入，不允许再发送消息 ──
+    if (data.conversation_closed) {
+      conversationWasClosed = true;
+      if (chatInputField) {
+        chatInputField.disabled = true;
+        chatInputField.placeholder = "对话已结束…";
+      }
+      if (chatSendButton) chatSendButton.disabled = true;
+    }
+
+    // 显示 NPC 回复
+    cancelNpcDialogueReveal();
+    const npcText = data.npc_text || "";
+    // 将 NPC 回复存入历史记录
+    if (npcText) {
+      chatHistoryMessages.push({ role: "npc", text: npcText, time: Date.now() });
+    }
+    revealNpcDialogueSequential(storyAiLine, npcText, {
+      onComplete: () => {
+        // 检查是否已收束到选项
+        if (data.story_resolved) {
+          handleChatResolved(data.story_resolved, data);
+          return;
+        }
+        // ── NPC 主动结束对话处理 ──
+        if (data.conversation_closed) {
+          if (mutualFarewell) {
+            // 双向告别：揭示选项让玩家推进剧情，而非直接关闭面板
+            if (chatInputContainer) {
+              chatInputContainer.style.display = "none"; // 永久隐藏输入区域
+            }
+            // 直接揭示剧情选项（不依赖轮次阈值），让玩家选择推进故事
+            unveilStoryChoices(data);
+          } else {
+            // AI 主动结束（resolved/close_signal）：自动关闭面板
+            setTimeout(() => closeStoryUI(), 1800);
+          }
+          return;
+        }
+        // ── NPC 说完，恢复对话框 ──
+        if (chatInputContainer) {
+          chatInputContainer.style.display = "";
+          if (chatInputField) {
+            chatInputField.value = "";
+            chatInputField.disabled = false;
+            setTimeout(() => chatInputField.focus(), 100);
+          }
+          if (chatSendButton) chatSendButton.disabled = false;
+        }
+        chatInputPending = false;
+      },
+    });
+
+    // 更新情绪提示
+    updateChatEmotion(data);
+
+    // ── 选项自然浮现：到达阈值后，在对话界面显示剧情选项 ──
+    if (data.unveil_choices) {
+      unveilStoryChoices(data);
+    }
+
+    // 如果 AI 返回 suggested_choices，显示为快捷按钮
+    if (data.suggested_choices && data.suggested_choices.length > 0 && !data.story_resolved) {
+      addChatQuickChoices(data.suggested_choices);
+    }
+  } catch (e) {
+    storyAiLine.textContent = "（通信中断，请稍后再试。）";
+    // 发送失败时恢复对话框
+    if (chatInputContainer) {
+      chatInputContainer.style.display = "";
+      if (chatInputField) {
+        chatInputField.disabled = false;
+        setTimeout(() => chatInputField.focus(), 100);
+      }
+      if (chatSendButton) chatSendButton.disabled = false;
+    }
+    chatInputPending = false;
+  }
+  renderMgmtResourcesHud(latestState?.session);
+}
+
+/** 当对话收束到选项时 */
+function handleChatResolved(choiceId, data) {
+  // 清理聊天 UI
+  teardownChatUI();
+  // 自动提交选项
+  postChoice(choiceId);
+  // 如果返回了 suggested_choices，也用一下其中第一条的文案效果
+  if (data.suggested_choices && data.suggested_choices.length) {
+    showToast(`${data.suggested_choices[0]}`, 3000);
+  }
+}
+
+/** 添加玩家/NPC 对话气泡（在 story-extras 中） */
+function addChatBubble(role, text) {
+  // 先清理已有气泡（保留最近 8 条）
+  const existing = storyExtras.querySelectorAll(".chat-bubble");
+  while (existing.length >= 8) {
+    existing[0].remove();
+  }
+  const div = document.createElement("div");
+  div.className = `chat-bubble chat-bubble--${role}`;
+  div.style.cssText =
+    `margin:4px 0;padding:6px 10px;border-radius:6px;font-size:13px;line-height:1.5;` +
+    (role === "player"
+      ? "background:#1a2a3f;color:#a0c4e8;align-self:flex-end;text-align:right;border:1px solid #2a3a5f;"
+      : "background:#1a222f;color:#c8d6e5;align-self:flex-start;text-align:left;border:1px solid #2a3648;");
+  div.textContent = text;
+  // 插入到 chat input 前面
+  if (chatInputContainer) {
+    storyExtras.insertBefore(div, chatInputContainer);
+  } else {
+    storyExtras.appendChild(div);
+  }
+  // 存储到历史记录
+  chatHistoryMessages.push({ role, text, time: Date.now() });
+}
+
+// ── 历史对话面板 ────────────────────────────────────────────
+
+/** 切换历史对话面板的显示/隐藏 */
+function toggleChatHistory() {
+  if (chatHistoryPanelVisible) {
+    closeChatHistory();
+  } else {
+    showChatHistory();
+  }
+}
+
+/** 创建并显示历史对话面板 */
+function showChatHistory() {
+  // 如果已存在则先关闭
+  const existing = document.getElementById("chat-history-panel");
+  if (existing) {
+    existing.remove();
+    chatHistoryPanelVisible = false;
+  }
+
+  const panel = document.createElement("div");
+  panel.id = "chat-history-panel";
+  panel.style.cssText =
+    "position:absolute;top:3px;left:0;right:0;bottom:0;z-index:60;" +
+    "background:rgba(8,13,22,0.97);display:flex;flex-direction:column;" +
+    "border-radius:0 0 12px 12px;overflow:hidden;";
+
+  // 标题栏（关闭按钮在左侧，避免与 story-close 重叠）
+  const header = document.createElement("div");
+  header.style.cssText =
+    "display:flex;align-items:center;gap:10px;" +
+    "padding:10px 14px;border-bottom:1px solid rgba(100,180,200,0.15);flex-shrink:0;";
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.textContent = "✕ 关闭";
+  closeBtn.style.cssText =
+    "background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);" +
+    "color:#8899aa;font-size:13px;cursor:pointer;padding:4px 10px;border-radius:4px;flex-shrink:0;" +
+    "font-family:inherit;";
+  closeBtn.addEventListener("click", closeChatHistory);
+  header.appendChild(closeBtn);
+
+  const title = document.createElement("span");
+  title.textContent = "对话历史";
+  title.style.cssText = "font-size:14px;font-weight:600;color:#b8d4e0;flex:1;";
+  header.appendChild(title);
+
+  panel.appendChild(header);
+
+  // 消息滚动区
+  const scroll = document.createElement("div");
+  scroll.style.cssText =
+    "flex:1;overflow-y:auto;overflow-x:hidden;padding:12px 14px;" +
+    "display:flex;flex-direction:column;gap:8px;";
+
+  if (chatHistoryMessages.length === 0) {
+    const empty = document.createElement("div");
+    empty.textContent = "暂无对话记录";
+    empty.style.cssText =
+      "color:#5a7a8a;font-size:13px;text-align:center;padding:40px 0;";
+    scroll.appendChild(empty);
+  } else {
+    for (const msg of chatHistoryMessages) {
+      const bubble = document.createElement("div");
+      bubble.style.cssText =
+        "padding:8px 12px;border-radius:6px;font-size:13px;line-height:1.5;max-width:90%;" +
+        (msg.role === "player"
+          ? "background:#1a2a3f;color:#a0c4e8;align-self:flex-end;text-align:right;border:1px solid #2a3a5f;margin-left:auto;"
+          : "background:#1a222f;color:#c8d6e5;align-self:flex-start;text-align:left;border:1px solid #2a3648;");
+      bubble.textContent = msg.text;
+      scroll.appendChild(bubble);
+    }
+  }
+
+  panel.appendChild(scroll);
+
+  // 底部提示
+  const footer = document.createElement("div");
+  footer.style.cssText =
+    "padding:6px 14px;font-size:11px;color:#5a6a7a;text-align:center;" +
+    "border-top:1px solid rgba(100,180,200,0.08);flex-shrink:0;";
+  footer.textContent = `共 ${chatHistoryMessages.length} 条消息`;
+  panel.appendChild(footer);
+
+  // 挂到 story-panel 层级（z-index: 60 > story-close 的 30，确保完全覆盖）
+  storyPanel.appendChild(panel);
+  chatHistoryPanelVisible = true;
+
+  // 滚动到底部
+  scroll.scrollTop = scroll.scrollHeight;
+}
+
+/** 关闭历史对话面板 */
+function closeChatHistory() {
+  const panel = document.getElementById("chat-history-panel");
+  if (panel) panel.remove();
+  chatHistoryPanelVisible = false;
+}
+
+/** 添加 AI 返回的快捷选项按钮 */
+function addChatQuickChoices(choices) {
+  // 清理旧快捷选项
+  const existing = storyExtras.querySelectorAll(".chat-quick-choice");
+  existing.forEach((el) => el.remove());
+
+  const wrap = document.createElement("div");
+  wrap.className = "chat-quick-choice";
+  wrap.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;margin:6px 0;";
+
+  for (const ch of choices.slice(0, 3)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = ch;
+    b.style.cssText =
+      "background:#1a2e3f;border:1px solid #3a5a7f;color:#a0c4d0;padding:4px 10px;" +
+      "cursor:pointer;font-family:inherit;font-size:12px;border-radius:4px;";
+    b.addEventListener("click", () => {
+      if (chatInputField) {
+        chatInputField.value = ch;
+        sendChatMessage(ch);
+      }
+    });
+    wrap.appendChild(b);
+  }
+  if (chatInputContainer) {
+    storyExtras.insertBefore(wrap, chatInputContainer);
+  } else {
+    storyExtras.appendChild(wrap);
+  }
+}
+
+/**
+ * 选项自然浮现：当对话进行到一定轮次后，将剧情节点的正式选项以自然方式显示在对话界面中。
+ * 玩家可以随时点击选项推进剧情，也可以继续自由对话。
+ */
+function unveilStoryChoices(data) {
+  // 避免重复渲染
+  const existing = storyExtras.querySelectorAll(".chat-unveil-choice");
+  existing.forEach((el) => el.remove());
+
+  // 从 state payload 中获取当前 narrative
+  const nar = data.narrative || chatActiveNarrative;
+  if (!nar || !nar.choices || nar.choices.length === 0) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "chat-unveil-choice";
+  wrap.style.cssText =
+    "margin:10px 0 6px;padding:8px 10px;background:#141f2b;" +
+    "border:1px solid #2a3a4f;border-radius:6px;";
+
+  for (const c of nar.choices) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = c.label_zh;
+    b.style.cssText =
+      "display:block;width:100%;text-align:left;margin:3px 0;padding:7px 10px;" +
+      "background:#1a2e3f;border:1px solid #3a5a7f;color:#a0c4d0;" +
+      "cursor:pointer;font-family:inherit;font-size:13px;border-radius:4px;";
+    b.addEventListener("mouseenter", () => {
+      b.style.background = "#243a4f";
+      b.style.borderColor = "#5a8abf";
+      b.style.color = "#c8e0f0";
+    });
+    b.addEventListener("mouseleave", () => {
+      b.style.background = "#1a2e3f";
+      b.style.borderColor = "#3a5a7f";
+      b.style.color = "#a0c4d0";
+    });
+    b.addEventListener("click", () => {
+      handleChatResolved(c.id, data);
+    });
+    wrap.appendChild(b);
+  }
+
+  if (chatInputContainer) {
+    storyExtras.insertBefore(wrap, chatInputContainer);
+  } else {
+    storyExtras.appendChild(wrap);
+  }
+}
+
 const storyBody = document.getElementById("story-body");
 
 /** 左侧立绘占位色（NPC） */
@@ -1213,6 +1891,7 @@ const PORTRAIT_NPC = {
   echo_7: "#7a5cb8",
   klein: "#5c5e72",
   elizabeth: "#944a62",
+  source: "#4a7a9e",
 };
 /** 设施占位色 */
 const PORTRAIT_FACILITY = {
@@ -1231,10 +1910,56 @@ const PORTRAIT_FACILITY = {
   purify_grove: "#4a7a55",
 };
 
+let storyPortraitImgEl = null;
+
+function ensureStoryPortraitImg() {
+  if (!storyPortraitImgEl) {
+    storyPortraitImgEl = document.createElement("img");
+    storyPortraitImgEl.className = "story-portrait-img";
+    storyPortraitImgEl.alt = "";
+    storyPortraitImgEl.decoding = "async";
+    storySpriteBlock.prepend(storyPortraitImgEl);
+  }
+  return storyPortraitImgEl;
+}
+
+/** @param {"npc"|"facility"} kind */
+function setStoryPortrait(kind, kindId, labelText) {
+  storyPortraitKind = kind;
+  storyPortraitId = kindId;
+  storyPortraitLabel = labelText || "";
+  storySpriteLabel.textContent = storyPortraitLabel;
+  const fallback = PORTRAIT_NPC[kindId] || PORTRAIT_FACILITY[kindId] || "#3d4f66";
+  const imgEl = ensureStoryPortraitImg();
+  let src = "";
+  if (kind === "npc") {
+    const path = PORTRAIT_SPRITE_PATH[kindId];
+    const cached = portraitSpriteImages.get(kindId);
+    if (path && cached?.complete && cached.naturalWidth > 0) {
+      src = new URL(path, tileAssetBaseUrl()).href;
+    }
+  } else if (kind === "facility") {
+    const cached = facilitySpriteImages.get(kindId);
+    const path = cached ? `./assets/facilities/${kindId}.png` : "";
+    if (path && cached?.complete && cached.naturalWidth > 0) {
+      src = new URL(path, tileAssetBaseUrl()).href;
+    }
+  }
+  if (src) {
+    storySpriteBlock.style.background = "rgba(12, 18, 28, 0.92)";
+    imgEl.src = src;
+    imgEl.hidden = false;
+    storySpriteLabel.textContent = storyPortraitLabel.replace(/\n（[^）]+）$/, "");
+  } else {
+    imgEl.hidden = true;
+    imgEl.removeAttribute("src");
+    storySpriteBlock.style.background = fallback;
+  }
+}
+
 function setPortraitPlaceholder(kindId, labelText) {
-  const c = PORTRAIT_NPC[kindId] || PORTRAIT_FACILITY[kindId] || "#3d4f66";
-  storySpriteBlock.style.background = c;
-  storySpriteLabel.textContent = labelText || "";
+  const kind = PORTRAIT_NPC[kindId] ? "npc" : "facility";
+  setStoryPortrait(kind, kindId, labelText);
 }
 
 function syncStoryChoicesLayout() {
@@ -1253,8 +1978,11 @@ async function fetchJSON(url, options = {}) {
     r = await fetch(url, { ...options, headers });
   } catch (e) {
     const msg = e?.message || String(e);
+    const isNetErr = msg.includes("Failed to fetch") || msg.includes("NetworkError");
     throw new Error(
-      `${msg.includes("Failed to fetch") || msg.includes("NetworkError") ? "无法连接服务器" : msg} · 请先在本机运行剧情 API：python -m game（默认 8787）；若端口不同请在地址栏加 ?api=http://127.0.0.1:端口`,
+      isNetErr
+        ? `无法连接游戏服务器 (${API_BASE}) · 请确认后端 API 已启动；或通过地址栏 ?api=你的服务器地址 指定接口`
+        : msg,
     );
   }
   const text = await r.text();
@@ -1348,7 +2076,11 @@ function syncExplorerApiBanner(online) {
     ? `<p class="explorer-api-banner__detail">本次错误：<span class="explorer-api-banner__err">${escBannerText(explorerSyncLastError)}</span></p>`
     : "";
   el.innerHTML = `<strong class="explorer-api-banner__title">无法同步剧情状态</strong>
-    <p class="explorer-api-banner__body">静态页面当前请求的接口基址为 <kbd>${esc}</kbd>。请在<strong>另一个终端</strong>于仓库根目录运行 <kbd>python -m game</kbd>（默认 <kbd>127.0.0.1:8787</kbd>），然后<strong>刷新本页</strong>。端口不一致时用地址参数：<kbd>?api=http://127.0.0.1:你的端口</kbd></p>${errLine}`;
+    <p class="explorer-api-banner__body">当前请求的游戏 API 地址为 <kbd>${esc}</kbd>。
+    ${esc.includes("127.0.0.1") || esc.includes("localhost")
+      ? `请在<strong>另一个终端</strong>运行 <kbd>python -m game</kbd>，然后刷新本页。`
+      : `请确认远程服务器地址正确且已启动。可通过地址栏参数临时切换：<kbd>?api=你的API地址</kbd>`}
+    端口不一致时用：<kbd>?api=http://地址:端口</kbd></p>${errLine}`;
 }
 
 function plotHasFlag(session, name) {
@@ -1383,185 +2115,1944 @@ async function refreshOpenStoryPanel() {
       syncStoryChoicesLayout();
     }
   } catch (e) {
-    showToast(String(e.message || e), 4200);
+    showErrorToast(e);
   }
   await refreshTopBar();
 }
 
-let facilitySimBackdrop = null;
-let facilitySimRaf = null;
+let workshopMapEl = null;
+let workshopUiSnap = null;
+let workshopBuildType = null;
+let workshopMoveFrom = null;
+let workshopSelected = null;
+let workshopPollTimer = null;
+let workshopEntryFrom = "west_shaft";
+let workshopHoverCell = null;
 
-function closeFacilitySimLayerIfOpen() {
-  if (facilitySimRaf != null) {
-    cancelAnimationFrame(facilitySimRaf);
-    facilitySimRaf = null;
+const WORKSHOP_DEFAULT_STOP_CAPS = {
+  ore: 50,
+  alloy: 80,
+  components: 40,
+  parts: 100,
+  medical_pack: 30,
+};
+
+const WORKSHOP_RES_ZH = {
+  ore: "矿石",
+  alloy: "合金",
+  components: "电子元件",
+  source_crystal: "源能结晶",
+  parts: "零件",
+  medical_pack: "医疗包",
+};
+
+/** 建造/升级消耗的基地资源中文名（与 hidden_state.BaseResources 一致） */
+const WORKSHOP_BASE_RES_ZH = {
+  energy: "能源",
+  parts: "零件",
+  food: "食物",
+  medical: "医疗",
+  intel: "情报",
+};
+
+
+
+function explorerIconHref(key) {
+  const rel = EXPLORER_ICON_PATH[key];
+  if (!rel) return "";
+  return new URL(rel, tileAssetBaseUrl()).href;
+}
+
+function explorerIconReady(key) {
+  const img = explorerIconImages.get(key);
+  return !!(img?.complete && img.naturalWidth > 0);
+}
+
+function startExplorerIconLoad() {
+  for (const [key, rel] of Object.entries(EXPLORER_ICON_PATH)) {
+    const img = new Image();
+    explorerIconImages.set(key, img);
+    wireExplorerAsset(img, rel, `icon_${key}`, () => {
+      initObjectivesTabIcons();
+      const strip = document.getElementById("resource-strip");
+      if (strip && latestState?.session) renderMgmtResourcesHud(latestState.session);
+    });
   }
-  if (!facilitySimBackdrop || facilitySimBackdrop.classList.contains("hidden")) return false;
-  facilitySimBackdrop.classList.add("hidden");
-  facilitySimBackdrop.setAttribute("aria-hidden", "true");
+}
+
+function workshopDeviceIconMarkup(type) {
+  if (explorerIconReady(type)) {
+    const href = explorerIconHref(type);
+    return `<img class="workshop-cell-icon workshop-cell-icon--img" src="${href}" alt="" decoding="async" />`;
+  }
+  return `<span class="workshop-cell-icon">${WORKSHOP_DEVICE_ICON[type] || "?"}</span>`;
+}
+
+function explorerIconImgHtml(key, className, size = 20) {
+  if (!explorerIconReady(key)) return "";
+  const href = explorerIconHref(key);
+  return `<img class="${className}" src="${href}" width="${size}" height="${size}" alt="" decoding="async" />`;
+}
+
+function initObjectivesTabIcons() {
+  document.querySelectorAll(".objectives-tab").forEach((btn) => {
+    const tab = btn.dataset.tab;
+    const iconKey = OBJECTIVES_TAB_ICON_KEY[tab];
+    if (!iconKey || btn.dataset.iconBound === "1") return;
+    const label = btn.textContent.trim();
+    const img = explorerIconImgHtml(iconKey, "objectives-tab__icon", 18);
+    if (img) {
+      btn.innerHTML = `${img}<span class="objectives-tab__label">${label}</span>`;
+      btn.dataset.iconBound = "1";
+    }
+  });
+}
+
+const WORKSHOP_TUTORIAL_LS = "epoch_workshop_tutorial_done_v20260524";
+let workshopTutorialStep = 0;
+let workshopTutorialActive = false;
+
+function buildWorkshopTutorialSteps(snap) {
+  const steps = [
+    {
+      id: "intro",
+      center: true,
+      title: "欢迎来到基地核心 · 自动化设施",
+      body: "基地核心已整合自动化产线：启动配装含采矿机与冶炼厂，再放置 3D 打印机即可产零件。",
+    },
+  ];
+  if (!snap?.built) {
+    steps.push({
+      id: "construct",
+      target: ".workshop-scene-gate .workshop-construct-btn, .workshop-scene-gate .workshop-discover-btn",
+      title: "第一步：启用工坊",
+      body: snap?.blueprint_known
+        ? "点击「开始改造工坊」。首次进入会调拨启动物资；改造后免费获得采矿机与仓储柜。"
+        : "先「查看蓝图」，再完成改造。系统会自动补足起步资源。",
+    });
+  }
+  if (snap?.built) {
+    steps.push(
+      {
+        id: "resources",
+        target: ".workshop-scene-resources",
+        title: "看清两种资源",
+        body: "工坊仓库存矿石/合金/零件；顶栏「基地 件」才是建造用的零件。打印机产物需点「运回零件」。",
+      },
+      {
+        id: "grid",
+        target: ".workshop-scene-grid",
+        title: "10×10 生产网格",
+        body: "点击设备查看详情；右侧选设备后，绿色格子可放置。原料经相邻仓储自动传递。",
+      },
+      {
+        id: "build",
+        target: ".workshop-build-list",
+        title: "建造清单",
+        body: "推荐链条：采矿机 → 冶炼厂 → 3D 打印机。能源不足时在能源区建发电站（1 矿石/周期 → 基地能源）；医疗包链需组装厂产元件。",
+      },
+      {
+        id: "starter",
+        target: ".workshop-grid-cell--type-miner, .workshop-grid-cell--type-storage",
+        title: "起步配装",
+        body: "已赠送采矿机与仓储柜。确保采矿机旁有仓储，矿石才会入库。",
+        optional: true,
+      },
+      {
+        id: "tasks",
+        target: ".workshop-scene-tasks",
+        title: "随机生产指标",
+        body: "左侧显示所需物资与奖励（未知显示 ???），备齐后点交付。",
+      },
+      {
+        id: "export",
+        target: ".workshop-scene-toolbar",
+        title: "运回基地与委任",
+        body: "底部可将零件/医疗包运回基地；勾选委任可让 NPC 以 70% 效率自动建造与排班。",
+      },
+    );
+  }
+  steps.push({
+    id: "done",
+    center: true,
+    title: "引导完成",
+    body: "随时点顶部「教程」重温。祝运营顺利！",
+    done: true,
+  });
+  return steps;
+}
+
+function workshopTutorialSteps(snap) {
+  return buildWorkshopTutorialSteps(snap).filter((s) => {
+    if (!s.optional) return true;
+    if (s.id === "starter") {
+      return !!workshopMapEl?.querySelector(".workshop-grid-cell--type-miner");
+    }
+    return true;
+  });
+}
+
+function ensureWorkshopTutorialOverlay() {
+  const root = ensureWorkshopMap();
+  let overlay = root.querySelector(".workshop-tutorial");
+  if (overlay) return overlay;
+  overlay = document.createElement("div");
+  overlay.className = "workshop-tutorial hidden";
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.innerHTML = `
+    <div class="workshop-tutorial-hole" aria-hidden="true"></div>
+    <div class="workshop-tutorial-card" role="dialog" aria-modal="true" aria-labelledby="workshop-tutorial-title">
+      <p class="workshop-tutorial-progress"></p>
+      <h3 id="workshop-tutorial-title" class="workshop-tutorial-title"></h3>
+      <p class="workshop-tutorial-body"></p>
+      <div class="workshop-tutorial-actions">
+        <button type="button" class="workshop-btn workshop-btn--ghost workshop-tutorial-skip">跳过</button>
+        <button type="button" class="workshop-btn workshop-btn--primary workshop-tutorial-next">下一步</button>
+      </div>
+    </div>`;
+  overlay.querySelector(".workshop-tutorial-skip")?.addEventListener("click", () => closeWorkshopTutorial(true));
+  overlay.querySelector(".workshop-tutorial-next")?.addEventListener("click", () => advanceWorkshopTutorial());
+  root.appendChild(overlay);
+  return overlay;
+}
+
+function ensureWorkshopTutorialButton() {
+  const root = workshopMapEl || ensureWorkshopMap();
+  if (root.querySelector(".workshop-tutorial-open")) return;
+  const topbar = root.querySelector(".workshop-map-topbar");
+  const back = topbar?.querySelector(".workshop-map-back");
+  if (!topbar || !back) return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "workshop-btn workshop-btn--ghost workshop-btn--sm workshop-tutorial-open";
+  btn.textContent = "玩法教程";
+  btn.addEventListener("click", () => openWorkshopTutorial(true));
+  back.insertAdjacentElement("afterend", btn);
+}
+
+function positionWorkshopTutorialHighlight(step) {
+  const overlay = ensureWorkshopTutorialOverlay();
+  const hole = overlay.querySelector(".workshop-tutorial-hole");
+  const card = overlay.querySelector(".workshop-tutorial-card");
+  if (!hole || !card) return;
+  hole.style.display = "none";
+  card.classList.remove("workshop-tutorial-card--anchor");
+  let target = null;
+  if (step?.target && !step.center) {
+    target = workshopMapEl?.querySelector(step.target);
+  }
+  if (target) {
+    const pad = 8;
+    const r = target.getBoundingClientRect();
+    hole.style.display = "block";
+    hole.style.left = `${Math.max(4, r.left - pad)}px`;
+    hole.style.top = `${Math.max(4, r.top - pad)}px`;
+    hole.style.width = `${r.width + pad * 2}px`;
+    hole.style.height = `${r.height + pad * 2}px`;
+    card.classList.add("workshop-tutorial-card--anchor");
+    const cardRect = card.getBoundingClientRect();
+    let left = r.left;
+    let top = r.bottom + 14;
+    if (top + cardRect.height > window.innerHeight - 12) top = r.top - cardRect.height - 14;
+    if (left + 320 > window.innerWidth - 12) left = window.innerWidth - 332;
+    card.style.left = `${Math.max(12, left)}px`;
+    card.style.top = `${Math.max(12, top)}px`;
+    target.classList.add("workshop-tutorial-target");
+  } else {
+    card.style.left = "50%";
+    card.style.top = "50%";
+    card.style.transform = "translate(-50%, -50%)";
+  }
+}
+
+function clearWorkshopTutorialTargets() {
+  workshopMapEl?.querySelectorAll(".workshop-tutorial-target").forEach((el) => {
+    el.classList.remove("workshop-tutorial-target");
+  });
+}
+
+function renderWorkshopTutorialStep() {
+  if (!workshopTutorialActive || !workshopUiSnap) return;
+  const steps = workshopTutorialSteps(workshopUiSnap);
+  if (workshopTutorialStep >= steps.length) {
+    closeWorkshopTutorial(true);
+    return;
+  }
+  const step = steps[workshopTutorialStep];
+  const overlay = ensureWorkshopTutorialOverlay();
+  clearWorkshopTutorialTargets();
+  overlay.classList.remove("hidden");
+  overlay.setAttribute("aria-hidden", "false");
+  overlay.querySelector(".workshop-tutorial-progress").textContent = `${workshopTutorialStep + 1} / ${steps.length}`;
+  overlay.querySelector(".workshop-tutorial-title").textContent = step.title;
+  overlay.querySelector(".workshop-tutorial-body").textContent = step.body;
+  const nextBtn = overlay.querySelector(".workshop-tutorial-next");
+  if (nextBtn) nextBtn.textContent = step.done ? "完成" : "下一步";
+  const card = overlay.querySelector(".workshop-tutorial-card");
+  if (card) card.style.transform = step.center ? "translate(-50%, -50%)" : "";
+  positionWorkshopTutorialHighlight(step);
+}
+
+function refreshWorkshopTutorialLayout() {
+  if (!workshopTutorialActive) return;
+  renderWorkshopTutorialStep();
+}
+
+function openWorkshopTutorial(force = false) {
+  if (!workshopUiSnap) return;
+  if (!force) {
+    try {
+      if (localStorage.getItem(WORKSHOP_TUTORIAL_LS)) return;
+    } catch {
+      /* ignore */
+    }
+  }
+  workshopTutorialStep = 0;
+  workshopTutorialActive = true;
+  ensureWorkshopTutorialButton();
+  renderWorkshopTutorialStep();
+}
+
+function closeWorkshopTutorial(markDone = false) {
+  workshopTutorialActive = false;
+  clearWorkshopTutorialTargets();
+  const overlay = workshopMapEl?.querySelector(".workshop-tutorial");
+  overlay?.classList.add("hidden");
+  overlay?.setAttribute("aria-hidden", "true");
+  if (markDone) {
+    try {
+      localStorage.setItem(WORKSHOP_TUTORIAL_LS, "1");
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function advanceWorkshopTutorial() {
+  const steps = workshopTutorialSteps(workshopUiSnap);
+  const step = steps[workshopTutorialStep];
+  if (step?.done) {
+    closeWorkshopTutorial(true);
+    return;
+  }
+  workshopTutorialStep += 1;
+  if (workshopTutorialStep >= steps.length) closeWorkshopTutorial(true);
+  else renderWorkshopTutorialStep();
+}
+
+function maybeStartWorkshopTutorial(snap) {
+  if (!snap) return;
+  try {
+    if (localStorage.getItem(WORKSHOP_TUTORIAL_LS)) return;
+  } catch {
+    /* ignore */
+  }
+  workshopUiSnap = snap;
+  openWorkshopTutorial(false);
+}
+
+function isWorkshopTutorialOpen() {
+  return workshopTutorialActive && !workshopMapEl?.querySelector(".workshop-tutorial")?.classList.contains("hidden");
+}
+
+function isWorkshopOpen() {
+  return !!(workshopMapEl && !workshopMapEl.classList.contains("hidden"));
+}
+
+function repairWorkshopOverlayState() {
+  const el = document.getElementById("workshop-map-scene");
+  if (!el) {
+    workshopMapEl = null;
+    document.body.classList.remove("scene-workshop");
+    document.getElementById("game")?.removeAttribute("aria-hidden");
+    return;
+  }
+  workshopMapEl = el;
+  const open = !el.classList.contains("hidden");
+  document.body.classList.toggle("scene-workshop", open);
+  if (!open) document.getElementById("game")?.removeAttribute("aria-hidden");
+}
+
+function ensureMainGameSceneVisible() {
+  repairWorkshopOverlayState();
+}
+
+function bootWorkshopUiState() {
+  const existing = document.getElementById("workshop-map-scene");
+  if (existing) {
+    existing.classList.add("hidden");
+    existing.setAttribute("aria-hidden", "true");
+    workshopMapEl = existing;
+  }
+  repairWorkshopOverlayState();
+}
+
+function isWestShaftSimOpen() {
+  return isWorkshopOpen();
+}
+
+function workshopEntryLabel(fromId) {
+  return "基地核心 · 自动化设施";
+}
+
+function enterWorkshopMapScene(fromId = "west_shaft") {
+  workshopEntryFrom = fromId || "west_shaft";
+  document.title = "源纪元 · 基地核心";
+  const canvasEl = document.getElementById("game");
+  if (canvasEl) canvasEl.setAttribute("aria-hidden", "true");
+  const root = ensureWorkshopMap();
+  root.classList.remove("hidden");
+  root.setAttribute("aria-hidden", "false");
+  document.body.classList.add("scene-workshop");
+  root.focus({ preventScroll: true });
+  const loc = root.querySelector(".workshop-map-loc-sub");
+  if (loc) loc.textContent = workshopEntryLabel(workshopEntryFrom);
+}
+
+function exitWorkshopMapScene() {
+  const wasOpen = isWorkshopOpen();
+  if (wasOpen) {
+    fetchJSON(gameApiUrl("/api/sim/workshop/leave"), { method: "POST", body: "{}" }).catch(() => {});
+  }
+  closeWorkshopTutorial(false);
+  document.body.classList.remove("scene-workshop");
+  document.title = "源纪元 · 岸线侵入 — 基地大地图探索";
+  document.getElementById("game")?.removeAttribute("aria-hidden");
+  if (workshopMapEl) {
+    workshopMapEl.classList.add("hidden");
+    workshopMapEl.setAttribute("aria-hidden", "true");
+  }
+  workshopBuildType = null;
+  workshopMoveFrom = null;
+  workshopSelected = null;
+  if (workshopPollTimer != null) {
+    clearInterval(workshopPollTimer);
+    workshopPollTimer = null;
+  }
+  return wasOpen;
+}
+
+function closeWorkshopScene() {
+  return exitWorkshopMapScene();
+}
+
+function closeWestShaftSimScene() {
+  return exitWorkshopMapScene();
+}
+
+function migrateWorkshopMapLayout(root) {
+  if (root.querySelector(".workshop-map-layout")) return;
+  const body = root.querySelector(".workshop-scene-body");
+  if (!body) return;
+  const pick = (sel) => {
+    const el = root.querySelector(sel);
+    if (el) el.remove();
+    return el;
+  };
+  const resources = pick(".workshop-scene-resources");
+  const hint = pick(".workshop-scene-hint");
+  const tasks = pick(".workshop-scene-tasks");
+  const log = pick(".workshop-scene-log");
+  const gridWrap = pick(".workshop-scene-grid-wrap");
+  const sidebar = pick(".workshop-scene-sidebar");
+  const deleg = pick(".workshop-delegation-status");
+  const toolbar = pick(".workshop-scene-toolbar");
+  const footer = root.querySelector(".workshop-map-footer");
+  footer?.remove();
+  root.querySelector(".workshop-map-main")?.remove();
+  root.querySelector(".workshop-map-floor")?.remove();
+  const hud = root.querySelector(".workshop-map-hud");
+  hud?.remove();
+  const topbar = document.createElement("header");
+  topbar.className = "workshop-map-topbar";
+  topbar.innerHTML = `
+    <button type="button" class="workshop-map-back workshop-btn workshop-btn--ghost">← 返回大地图</button>
+    <button type="button" class="workshop-btn workshop-btn--ghost workshop-btn--sm workshop-tutorial-open">玩法教程</button>
+    <div class="workshop-map-location">
+      <span class="workshop-map-loc-sub">西脉浅巷 · 地下层</span>
+      <h1 id="workshop-scene-title" class="workshop-scene-title">基地核心</h1>
+    </div>`;
+  topbar.querySelector(".workshop-map-back")?.addEventListener("click", () => closeWorkshopScene());
+  topbar.querySelector(".workshop-tutorial-open")?.addEventListener("click", () => openWorkshopTutorial(true));
+  const layout = document.createElement("main");
+  layout.className = "workshop-map-layout";
+  const left = document.createElement("aside");
+  left.className = "workshop-map-left";
+  for (const el of [resources, hint, tasks, log, deleg].filter(Boolean)) left.appendChild(el);
+  const center = document.createElement("section");
+  center.className = "workshop-map-center";
+  if (gridWrap) center.appendChild(gridWrap);
+  const right = document.createElement("aside");
+  right.className = "workshop-map-right workshop-scene-sidebar";
+  if (sidebar) {
+    while (sidebar.firstChild) right.appendChild(sidebar.firstChild);
+  }
+  if (toolbar) {
+    const actions = document.createElement("div");
+    actions.className = "workshop-map-actions";
+    actions.appendChild(toolbar);
+    right.appendChild(actions);
+  }
+  layout.append(left, center, right);
+  body.prepend(topbar);
+  body.appendChild(layout);
+}
+
+function ensureWorkshopMap() {
+  if (workshopMapEl) {
+    const wrap = workshopMapEl.querySelector(".workshop-scene-grid-wrap");
+    if (wrap && !wrap.querySelector(".workshop-grid-stage")) {
+      const stage = document.createElement("div");
+      stage.className = "workshop-grid-stage";
+      for (const sel of [".workshop-zone-labels", ".workshop-logistics-svg", ".workshop-scene-grid"]) {
+        const node = wrap.querySelector(sel);
+        if (node) stage.appendChild(node);
+      }
+      wrap.replaceChildren(stage);
+    }
+    migrateWorkshopMapLayout(workshopMapEl);
+    ensureWorkshopGridStructure(workshopMapEl);
+    if (!workshopMapEl.querySelector(".workshop-interaction-bar")) {
+      const center = workshopMapEl.querySelector(".workshop-map-center");
+      const wrap2 = center?.querySelector(".workshop-scene-grid-wrap");
+      if (center && wrap2) {
+        const bar = document.createElement("div");
+        bar.className = "workshop-interaction-bar";
+        bar.innerHTML = `<span class="workshop-interaction-mode">浏览模式</span>
+          <button type="button" class="workshop-btn workshop-btn--sm workshop-btn--ghost workshop-cancel-build hidden">取消建造</button>`;
+        center.insertBefore(bar, wrap2);
+      }
+    }
+    bindWorkshopMapInteraction(workshopMapEl);
+    ensureWorkshopTutorialButton();
+    return workshopMapEl;
+  }
+  const root = document.createElement("div");
+  root.id = "workshop-map-scene";
+  root.className = "workshop-map hidden";
+  root.setAttribute("aria-hidden", "true");
+  root.innerHTML = `
+    <div class="workshop-map-viewport">
+      <div class="workshop-scene-gate hidden"></div>
+      <div class="workshop-scene-body hidden">
+        <header class="workshop-map-topbar">
+          <button type="button" class="workshop-map-back workshop-btn workshop-btn--ghost">← 返回</button>
+          <div class="workshop-map-location">
+            <h1 id="workshop-scene-title" class="workshop-scene-title">基地核心</h1>
+          </div>
+          <button type="button" class="workshop-btn workshop-btn--ghost workshop-btn--sm workshop-tutorial-open">教程</button>
+        </header>
+        <main class="workshop-map-layout">
+          <aside class="workshop-map-left">
+            <div class="workshop-scene-resources"></div>
+            <div class="workshop-scene-tasks"></div>
+          </aside>
+          <section class="workshop-map-center" aria-label="工坊生产层地图">
+            <div class="workshop-interaction-bar hidden">
+              <span class="workshop-interaction-mode"></span>
+              <button type="button" class="workshop-btn workshop-btn--sm workshop-btn--ghost workshop-cancel-build hidden">取消</button>
+            </div>
+            <div class="workshop-scene-grid-wrap">
+              <div class="workshop-grid-stage">
+                <div class="workshop-zone-labels" aria-hidden="true"></div>
+                <svg class="workshop-logistics-svg" aria-hidden="true" preserveAspectRatio="none"></svg>
+                <div class="workshop-scene-grid" aria-label="10×10 工坊网格"></div>
+              </div>
+            </div>
+          </section>
+          <aside class="workshop-map-right workshop-scene-sidebar">
+            <p class="workshop-build-head">建造 · 消耗基地资源</p>
+            <div class="workshop-build-list" aria-label="建造清单"></div>
+            <div class="workshop-device-detail hidden">
+              <div class="workshop-device-detail-body"></div>
+            </div>
+            <div class="workshop-scene-trade hidden">
+              <div class="workshop-trade-list"></div>
+            </div>
+            <div class="workshop-scene-fatigue hidden">
+              <div class="workshop-fatigue-list"></div>
+            </div>
+            <div class="workshop-scene-caps">
+              <label class="workshop-caps-enable-label"><input type="checkbox" class="workshop-caps-enable-cb" /> 达上限停产</label>
+              <p class="workshop-caps-hint">停线阈值：0=不限；矿石默认 50。设成 1 会导致只产 1 个就停。</p>
+              <div class="workshop-caps-list"></div>
+            </div>
+            <div class="workshop-map-actions">
+              <div class="workshop-scene-toolbar">
+                <label class="workshop-delegate-label"><input type="checkbox" class="workshop-delegate-cb" /> 委任</label>
+                <button type="button" class="workshop-btn workshop-btn--ghost workshop-import-ore">导入源矿</button>
+                <button type="button" class="workshop-btn workshop-btn--ghost workshop-export-parts">运回零件</button>
+                <button type="button" class="workshop-btn workshop-btn--ghost workshop-export-med">运回医疗</button>
+              </div>
+            </div>
+          </aside>
+        </main>
+      </div>
+    </div>`;
+  root.querySelector(".workshop-map-back")?.addEventListener("click", () => closeWorkshopScene());
+  root.querySelector(".workshop-tutorial-open")?.addEventListener("click", () => openWorkshopTutorial(true));
+  root.querySelector(".workshop-delegate-cb")?.addEventListener("change", (ev) => {
+    postWorkshopDelegate(ev.target.checked);
+  });
+  root.querySelector(".workshop-import-ore")?.addEventListener("click", () => postWorkshopImportOre(1));
+  root.querySelector(".workshop-export-parts")?.addEventListener("click", () => postWorkshopExport("parts", 999));
+  root.querySelector(".workshop-export-med")?.addEventListener("click", () => postWorkshopExport("medical_pack", 999));
+  root.setAttribute("tabindex", "0");
+  document.body.appendChild(root);
+  workshopMapEl = root;
+  bindWorkshopMapInteraction(root);
+  return root;
+}
+
+
+function workshopSnapFromData(data) {
+  return data?.workshop || data?.underground_workshop || data?.west_shaft || data?.west_shaft_sim;
+}
+
+async function syncWorkshopFromResponse(data, opts = {}) {
+  latestState = data;
+  // 工坊操作后立即保存到 localStorage
+  persistSessionToLocalStorage();
+  renderMgmtResourcesHud(data.session);
+  renderMgmtLogStrip(data.management_recent);
+  const snap = workshopSnapFromData(data);
+  if (!snap) return;
+  workshopUiSnap = snap;
+  if (!isWorkshopOpen()) return;
+  if (opts.soft) {
+    updateWorkshopLiveData(snap, opts);
+  } else {
+    renderWorkshopScene(snap);
+  }
+}
+
+function workshopCatalogEntry(snap, type) {
+  return (snap?.build_catalog || []).find((d) => d.type === type) || null;
+}
+
+function workshopCanPlaceAt(snap, x, y, entry, opts = {}) {
+  if (!entry || !snap?.grid) return false;
+  const gridSize = snap.grid_size || 10;
+  const w = entry.w || 1;
+  const h = entry.h || 1;
+  if (x < 0 || y < 0 || x + w > gridSize || y + h > gridSize) return false;
+  const ignore = opts.ignoreAnchor || null;
+  for (let dy = 0; dy < h; dy++) {
+    for (let dx = 0; dx < w; dx++) {
+      const cell = snap.grid[y + dy]?.[x + dx];
+      if (!cell) continue;
+      if (ignore && cell.anchor_x === ignore.x && cell.anchor_y === ignore.y) continue;
+      return false;
+    }
+  }
   return true;
 }
 
-function ensureFacilitySimBackdrop() {
-  if (facilitySimBackdrop) return facilitySimBackdrop;
-  const bd = document.createElement("div");
-  bd.id = "facility-sim-backdrop";
-  bd.className = "facility-sim-backdrop hidden";
-  bd.setAttribute("aria-hidden", "true");
-  bd.innerHTML = `
-    <div class="facility-sim-panel" role="dialog" aria-modal="true" aria-labelledby="facility-sim-title">
-      <button type="button" class="facility-sim-close" aria-label="关闭">×</button>
-      <h2 id="facility-sim-title" class="facility-sim-title"></h2>
-      <p class="facility-sim-lead"></p>
-      <label class="facility-sim-label" for="facility-sim-select">选择本轮作业类型</label>
-      <select id="facility-sim-select" class="facility-sim-select"></select>
-      <p class="facility-sim-act-hint"></p>
-      <div class="facility-sim-game" aria-label="校准小游戏">
-        <div class="facility-sim-strip">
-          <div class="facility-sim-green"></div>
-          <div class="facility-sim-needle"></div>
-        </div>
-        <div class="facility-sim-game-meta"></div>
-        <button type="button" class="facility-sim-hit">点击校准（需连续 3 次命中）</button>
-      </div>
-      <button type="button" class="facility-sim-submit">提交作业结算</button>
-      <p class="facility-sim-footnote">说明：结算仍走服务器资源活动校验；成功与否由活动内置概率决定。侧栏仍可执行同类行动。</p>
-    </div>`;
-  bd.addEventListener("click", (ev) => {
-    if (ev.target === bd) closeFacilitySimLayerIfOpen();
-  });
-  bd.querySelector(".facility-sim-close").addEventListener("click", () => closeFacilitySimLayerIfOpen());
-  document.body.appendChild(bd);
-  facilitySimBackdrop = bd;
-  return bd;
+function workshopMoveDeviceEntry(snap, anchor) {
+  if (!anchor || !snap?.devices) return null;
+  const dev =
+    snap.devices.find((d) => d.anchor_x === anchor.x && d.anchor_y === anchor.y) || null;
+  if (!dev) return null;
+  return { type: dev.type, label_zh: dev.label_zh, w: dev.w || 1, h: dev.h || 1 };
 }
 
-/** 静默期设施专用全屏工作台：短时校准 + POST /api/sim/activity/run */
-function openFacilitySimWorkbench(fac, overlay) {
-  closeFacilitySimLayerIfOpen();
+function workshopCanMoveTo(snap, fromAnchor, toX, toY) {
+  const entry = workshopMoveDeviceEntry(snap, fromAnchor);
+  if (!entry) return false;
+  return workshopCanPlaceAt(snap, toX, toY, entry, { ignoreAnchor: fromAnchor });
+}
 
-  const bd = ensureFacilitySimBackdrop();
-  const title = bd.querySelector(".facility-sim-title");
-  const lead = bd.querySelector(".facility-sim-lead");
-  const sel = bd.querySelector(".facility-sim-select");
-  const actHint = bd.querySelector(".facility-sim-act-hint");
-  const green = bd.querySelector(".facility-sim-green");
-  const needle = bd.querySelector(".facility-sim-needle");
-  const meta = bd.querySelector(".facility-sim-game-meta");
-  const hitBtn = bd.querySelector(".facility-sim-hit");
-  const submitBtn = bd.querySelector(".facility-sim-submit");
+function workshopCancelMoveMode() {
+  workshopMoveFrom = null;
+}
 
-  title.textContent = `${fac.name} · 静默工作台`;
-  lead.textContent = overlay.manual_hint_zh || "";
+function workshopCanAffordBuild(snap, entry) {
+  if (!entry?.build || !snap?.base_resources) return false;
+  const br = snap.base_resources;
+  return Object.entries(entry.build).every(([k, v]) => (br[k] ?? 0) >= Number(v));
+}
 
-  sel.replaceChildren();
-  for (const a of overlay.activities || []) {
-    const o = document.createElement("option");
-    o.value = a.activity_id;
-    const rp = a.reward_preview || {};
-    const gain = Object.entries(rp)
-      .filter(([, v]) => Number(v))
-      .map(([k, v]) => `${k}+${v}`)
-      .join(" / ");
-    o.textContent = `${a.run_kind_zh || a.activity_id}（${gain || "参见预览"}）`;
-    if (!a.can_run_now) o.disabled = true;
-    sel.appendChild(o);
+function workshopAffordReason(snap, entry) {
+  const br = snap?.base_resources || {};
+  const resZh = { ...WORKSHOP_BASE_RES_ZH, ...WORKSHOP_RES_ZH };
+  const parts = [];
+  for (const [k, v] of Object.entries(entry?.build || {})) {
+    const need = Number(v);
+    const have = Number(br[k] ?? 0);
+    if (have < need) parts.push(`${resZh[k] || k} ${have}/${need}`);
   }
+  return parts.join(" · ");
+}
 
-  function updateActHint() {
-    const aid = sel.value;
-    const row = (overlay.activities || []).find((x) => String(x.activity_id) === String(aid));
-    if (!row) {
-      actHint.textContent = "";
-      return;
+function workshopBuildCostParts(build) {
+  const order = ["energy", "parts", "food", "medical", "intel"];
+  const c = build || {};
+  const seen = new Set();
+  const rows = [];
+  for (const k of order) {
+    if (k in c) {
+      seen.add(k);
+      const need = Number(c[k]);
+      if (need > 0) rows.push({ key: k, label: WORKSHOP_BASE_RES_ZH[k] || k, need });
     }
-    actHint.textContent = row.can_run_now
-      ? `行前消耗：能量 ${row.cost_preview?.energy ?? 0} · 补给 ${row.cost_preview?.food ?? 0} · ${row.incursion_notes || ""}`
-      : row.blocked_reason_zh || "当前不可执行该项作业";
+  }
+  for (const [k, v] of Object.entries(c)) {
+    if (seen.has(k)) continue;
+    const need = Number(v);
+    if (need > 0) rows.push({ key: k, label: WORKSHOP_BASE_RES_ZH[k] || WORKSHOP_RES_ZH[k] || k, need });
+  }
+  return rows;
+}
+
+function workshopBuildCostText(build) {
+  const rows = workshopBuildCostParts(build);
+  return rows.length ? rows.map((r) => `${r.label}×${r.need}`).join(" · ") : "—";
+}
+
+function workshopBuildCostHtml(build, snap) {
+  const br = snap?.base_resources || {};
+  const rows = workshopBuildCostParts(build);
+  if (!rows.length) return `<small class="workshop-build-cost">—</small>`;
+  const spans = rows
+    .map((r) => {
+      const have = Number(br[r.key] ?? 0);
+      const lack = have < r.need;
+      return `<span class="workshop-build-res${lack ? " workshop-build-res--lack" : ""}">${r.label}×${r.need}</span>`;
+    })
+    .join('<span class="workshop-build-sep"> · </span>');
+  return `<small class="workshop-build-cost">${spans}</small>`;
+}
+
+function workshopCanAffordUpgrade(snap, dev) {
+  if (dev?.can_afford_upgrade === false) return false;
+  if (dev?.can_afford_upgrade === true) return true;
+  const cost = dev?.upgrade_cost || {};
+  const br = snap?.base_resources || {};
+  return Object.entries(cost).every(([k, v]) => (br[k] ?? 0) >= Number(v));
+}
+
+function workshopUpgradeAffordReason(snap, dev) {
+  const br = snap?.base_resources || {};
+  const resZh = { energy: "能源", parts: "零件", ...WORKSHOP_RES_ZH };
+  const parts = [];
+  for (const [k, v] of Object.entries(dev?.upgrade_cost || {})) {
+    const need = Number(v);
+    const have = Number(br[k] ?? 0);
+    if (have < need) parts.push(`${resZh[k] || k} ${have}/${need}`);
+  }
+  return parts.join(" · ");
+}
+
+function renderWorkshopResourcesHtml(snap) {
+  const wh = snap.warehouse || {};
+  const br = snap.base_resources || {};
+  const whKeys = ["ore", "alloy", "components", "parts", "medical_pack"];
+  const whLine = whKeys.map((k) => `${WORKSHOP_RES_ZH[k] || k}${wh[k] ?? 0}`).join(" ");
+  const extraWh = Object.entries(wh)
+    .filter(([k, v]) => !whKeys.includes(k) && Number(v) > 0)
+    .map(([k, v]) => `${WORKSHOP_RES_ZH[k] || k}${v}`)
+    .join(" ");
+  const whDisplay = extraWh ? `${whLine} ${extraWh}` : whLine;
+  return `<div class="workshop-res-block workshop-res-block--compact">
+    <span>仓 ${whDisplay} · ${snap.storage_used}/${snap.storage_cap}</span>
+    <span>基地 能${br.energy ?? 0} 件${br.parts ?? 0} · 源矿缓冲${snap.source_ore_buffer ?? 0}</span>
+  </div>`;
+}
+
+function ensureWorkshopGridStructure(root) {
+  let wrap = root.querySelector(".workshop-scene-grid-wrap");
+  const center = root.querySelector(".workshop-map-center");
+  if (!wrap && center) {
+    wrap = document.createElement("div");
+    wrap.className = "workshop-scene-grid-wrap";
+    center.appendChild(wrap);
+  }
+  if (!wrap) return null;
+
+  let stage = wrap.querySelector(".workshop-grid-stage");
+  if (!stage) {
+    stage = document.createElement("div");
+    stage.className = "workshop-grid-stage";
+    wrap.replaceChildren(stage);
   }
 
-  sel.onchange = updateActHint;
-  updateActHint();
-
-  let phase = 0;
-  let greenCenter = 0.5;
-  let successes = 0;
-
-  function placeGreen() {
-    greenCenter = 0.18 + Math.random() * 0.64;
-    const half = 0.11;
-    green.style.left = `${(greenCenter - half) * 100}%`;
-    green.style.width = `${half * 2 * 100}%`;
+  if (!stage.querySelector(".workshop-zone-labels")) {
+    const zoneWrap = document.createElement("div");
+    zoneWrap.className = "workshop-zone-labels";
+    zoneWrap.setAttribute("aria-hidden", "true");
+    stage.appendChild(zoneWrap);
+  }
+  if (!stage.querySelector(".workshop-logistics-svg")) {
+    const svgEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svgEl.classList.add("workshop-logistics-svg");
+    svgEl.setAttribute("aria-hidden", "true");
+    svgEl.setAttribute("preserveAspectRatio", "none");
+    stage.appendChild(svgEl);
+  }
+  if (!stage.querySelector(".workshop-scene-grid")) {
+    const gridEl = document.createElement("div");
+    gridEl.className = "workshop-scene-grid";
+    gridEl.setAttribute("aria-label", "10×10 工坊网格");
+    stage.appendChild(gridEl);
   }
 
-  placeGreen();
+  return {
+    stage,
+    zoneWrap: stage.querySelector(".workshop-zone-labels"),
+    svgEl: stage.querySelector(".workshop-logistics-svg"),
+    gridEl: stage.querySelector(".workshop-scene-grid"),
+  };
+}
 
-  function tick() {
-    phase += 0.07;
-    const t = (Math.sin(phase) + 1) / 2;
-    needle.style.left = `${t * 100}%`;
-    needle.dataset.t = String(t);
-    facilitySimRaf = requestAnimationFrame(tick);
+function workshopCellAt(snap, x, y) {
+  return snap?.grid?.[y]?.[x] ?? null;
+}
+
+function workshopAnchorOf(cell) {
+  if (!cell) return null;
+  if (cell.is_anchor) return { x: cell.anchor_x, y: cell.anchor_y };
+  if (cell.anchor_x != null && cell.anchor_y != null) return { x: cell.anchor_x, y: cell.anchor_y };
+  return null;
+}
+
+function handleWorkshopEscapeKey() {
+  if (isWorkshopTutorialOpen()) {
+    closeWorkshopTutorial(true);
+    return true;
+  }
+  if (!isWorkshopOpen()) return false;
+  if (workshopBuildType) {
+    workshopBuildType = null;
+    renderWorkshopScene(workshopUiSnap);
+    showToast("已取消建造模式。", 1800);
+    return true;
+  }
+  if (workshopMoveFrom) {
+    workshopCancelMoveMode();
+    renderWorkshopScene(workshopUiSnap);
+    showToast("已取消移动。", 1800);
+    return true;
+  }
+  if (workshopSelected) {
+    workshopSelected = null;
+    renderWorkshopScene(workshopUiSnap);
+    return true;
+  }
+  return false;
+}
+
+function workshopSelectedDevice(snap) {
+  if (!workshopSelected || !snap?.devices) return null;
+  return (
+    snap.devices.find((d) => d.anchor_x === workshopSelected.x && d.anchor_y === workshopSelected.y) || null
+  );
+}
+
+function workshopPrinterRecipeLabel(recipe) {
+  return recipe === "medical" ? "医疗包" : "零件";
+}
+
+function workshopDeviceDetailStatsHtml(dev) {
+  if (!dev) return "";
+  const parts = [];
+  if (dev.type === "printer" && dev.recipe_zh) {
+    parts.push(`<span class="workshop-detail-recipe">当前配方 ${dev.recipe_zh}</span>`);
+  }
+  if (dev.rate_zh) parts.push(`<span class="workshop-detail-rate">产出 ${dev.rate_zh}</span>`);
+  if (dev.status_zh) {
+    const sc = dev.status_code || "running";
+    parts.push(`<span class="workshop-detail-status workshop-detail-status--${sc}">${dev.status_zh}</span>`);
+  }
+  if (dev.status_code !== "storage" && Number(dev.cycle_s) > 0) {
+    parts.push(`<span class="workshop-detail-cycle">周期 ${dev.progress_pct ?? 0}%</span>`);
+  }
+  if (dev.npc_label_zh) {
+    const eff =
+      dev.npc_efficiency_pct != null && dev.npc_efficiency_pct < 100 ? ` · 效率 ${dev.npc_efficiency_pct}%` : "";
+    parts.push(`<span class="workshop-detail-npc">岗位 ${dev.npc_label_zh}${eff}</span>`);
+  }
+  if (!parts.length) return "";
+  return `<p class="workshop-device-detail-stats">${parts.join("")}</p>`;
+}
+
+function refreshWorkshopSelectionHighlight() {
+  const root = workshopMapEl;
+  if (!root) return;
+  root.querySelectorAll(".workshop-grid-cell--selected").forEach((el) => el.classList.remove("workshop-grid-cell--selected"));
+  if (!workshopSelected) return;
+  const btn = root.querySelector(
+    `.workshop-scene-grid .workshop-grid-cell[data-x="${workshopSelected.x}"][data-y="${workshopSelected.y}"]`,
+  );
+  btn?.classList.add("workshop-grid-cell--selected");
+}
+
+function workshopApplyCellStatusClasses(btn, cell) {
+  const statusPrefix = "workshop-grid-cell--status-";
+  const sc = cell?.status_code || "running";
+  btn.classList.toggle("workshop-grid-cell--off", !!cell && !cell.enabled);
+  [...btn.classList].forEach((c) => {
+    if (c.startsWith(statusPrefix)) btn.classList.remove(c);
+  });
+  btn.classList.toggle("workshop-grid-cell--running", !!cell && cell.enabled && sc === "running");
+  if (sc !== "running" && sc !== "storage") btn.classList.add(`${statusPrefix}${sc}`);
+}
+
+function patchWorkshopGridFromSnap(snap) {
+  const root = workshopMapEl;
+  if (!root || workshopBuildType || workshopMoveFrom) return;
+  const gridSize = snap.grid_size || 10;
+  const grid = snap.grid || [];
+  for (let y = 0; y < gridSize; y++) {
+    for (let x = 0; x < gridSize; x++) {
+      const btn = root.querySelector(`.workshop-scene-grid .workshop-grid-cell[data-x="${x}"][data-y="${y}"]`);
+      const cell = grid[y]?.[x];
+      if (!btn || !cell?.is_anchor) continue;
+      workshopApplyCellStatusClasses(btn, cell);
+      const pct = cell.progress_pct ?? 0;
+      btn.style.setProperty("--progress-pct", `${pct}%`);
+      const prog = btn.querySelector(".workshop-cell-progress");
+      if (prog) prog.style.width = `${pct}%`;
+      btn.title = `${cell.status_zh || ""} — 双击切换启停`;
+    }
+  }
+  refreshWorkshopSelectionHighlight();
+}
+
+function updateWorkshopDeviceDetailStats(snap, dev) {
+  const detailBody = workshopMapEl?.querySelector(".workshop-device-detail-body");
+  if (!detailBody || !dev) return;
+  const titleEl = detailBody.querySelector(".workshop-device-detail-title");
+  if (titleEl) titleEl.innerHTML = `<strong>${dev.label_zh}</strong> L${dev.level}`;
+  const html = workshopDeviceDetailStatsHtml(dev);
+  const existing = detailBody.querySelector(".workshop-device-detail-stats");
+  if (html) {
+    if (existing) existing.outerHTML = html;
+    else if (titleEl) titleEl.insertAdjacentHTML("afterend", html);
+  } else {
+    existing?.remove();
+  }
+}
+
+function renderWorkshopDeviceDetail(snap, dev, opts = {}) {
+  const root = workshopMapEl;
+  const detailWrap = root?.querySelector(".workshop-device-detail");
+  const detailBody = root?.querySelector(".workshop-device-detail-body");
+  if (!detailWrap || !detailBody || !dev) return;
+  detailWrap.classList.remove("hidden");
+  detailBody.replaceChildren();
+  const title = document.createElement("p");
+  title.className = "workshop-device-detail-title";
+  title.innerHTML = `<strong>${dev.label_zh}</strong> L${dev.level}`;
+  detailBody.appendChild(title);
+  const statsHtml = workshopDeviceDetailStatsHtml(dev);
+  if (statsHtml) detailBody.insertAdjacentHTML("beforeend", statsHtml);
+  const actions = document.createElement("div");
+  actions.className = "workshop-detail-actions";
+  const mk = (label, fn, primary = false) => {
+    const bb = document.createElement("button");
+    bb.type = "button";
+    bb.className = `workshop-btn workshop-btn--sm${primary ? " workshop-btn--primary" : ""}`;
+    bb.textContent = label;
+    bb.disabled = !!snap.abandoned;
+    bb.addEventListener("click", fn);
+    return bb;
+  };
+  actions.appendChild(mk(dev.enabled ? "暂停" : "启用", () => postWorkshopToggle(dev.anchor_x, dev.anchor_y), true));
+  actions.appendChild(
+    mk("移动", () => {
+      workshopBuildType = null;
+      workshopMoveFrom = { x: dev.anchor_x, y: dev.anchor_y };
+      workshopSelected = { x: dev.anchor_x, y: dev.anchor_y };
+      renderWorkshopScene(workshopUiSnap);
+      showToast(`移动 ${dev.label_zh}：点击绿色高亮格放置（Esc 取消）`, 3200);
+    }),
+  );
+  if (dev.can_upgrade) {
+    const upAfford = workshopCanAffordUpgrade(snap, dev);
+    const upCost = dev.upgrade_cost || {};
+    const upLabel =
+      upCost.energy != null || upCost.parts != null ? `升级 ${upCost.energy ?? 0}/${upCost.parts ?? 0}` : "升级";
+    const upBtn = mk(upLabel, () => {
+      if (!workshopCanAffordUpgrade(workshopUiSnap, dev)) {
+        showToast(`基地资源不足：${workshopUpgradeAffordReason(workshopUiSnap, dev)}`, 3600);
+        return;
+      }
+      postWorkshopUpgrade(dev.anchor_x, dev.anchor_y);
+    });
+    upBtn.disabled = !!snap.abandoned || !upAfford;
+    if (!upAfford) upBtn.title = `基地资源不足：${workshopUpgradeAffordReason(snap, dev)}`;
+    actions.appendChild(upBtn);
+  }
+  actions.appendChild(mk("拆除", () => postWorkshopDemolish(dev.anchor_x, dev.anchor_y)));
+  if (dev.type === "printer") {
+    actions.appendChild(
+      mk(`切换为${workshopPrinterRecipeLabel(dev.recipe === "medical" ? "default" : "medical")}`, () => {
+        const cur = workshopSelectedDevice(workshopUiSnap);
+        if (!cur || cur.type !== "printer") return;
+        const next = cur.recipe === "medical" ? "default" : "medical";
+        postWorkshopSetRecipe(cur.anchor_x, cur.anchor_y, next);
+      }),
+    );
+  }
+  detailBody.appendChild(actions);
+  const sel = document.createElement("select");
+  sel.className = "workshop-npc-select";
+  sel.disabled = !!snap.abandoned;
+  sel.innerHTML = `<option value="">— 未分配 —</option>${(snap.npc_roster || [])
+    .map((n) => {
+      const count = n.device_count || 0;
+      const label = count > 0 ? `${n.label_zh}（${count}/2台）` : n.label_zh;
+      return `<option value="${n.id}"${n.id === dev.npc_id ? " selected" : ""}>${label}</option>`;
+    })
+    .join("")}`;
+  sel.addEventListener("change", () => postWorkshopAssignNpc(dev.anchor_x, dev.anchor_y, sel.value));
+  detailBody.appendChild(sel);
+  if (opts.scroll) detailWrap.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  renderWorkshopCellInspector(workshopCellAt(snap, dev.anchor_x, dev.anchor_y), snap);
+}
+
+function refreshWorkshopDeviceDetailPanel(snap, opts = {}) {
+  const dev = workshopSelectedDevice(snap);
+  const detailWrap = workshopMapEl?.querySelector(".workshop-device-detail");
+  const detailBody = workshopMapEl?.querySelector(".workshop-device-detail-body");
+  if (!detailWrap || !detailBody) return;
+  if (!workshopSelected) {
+    detailWrap.classList.add("hidden");
+    return;
+  }
+  if (dev) {
+    const needFull = opts.full || dev.type === "printer";
+    if (needFull) renderWorkshopDeviceDetail(snap, dev, opts);
+    else updateWorkshopDeviceDetailStats(snap, dev);
+  } else {
+    renderWorkshopEmptyCellDetail(detailWrap, detailBody, snap, workshopSelected.x, workshopSelected.y);
+    renderWorkshopCellInspector(null, snap);
+  }
+}
+
+function updateWorkshopLiveData(snap, opts = {}) {
+  workshopUiSnap = snap;
+  const root = workshopMapEl;
+  if (!root || root.classList.contains("hidden")) return;
+
+  const resEl = root.querySelector(".workshop-scene-resources");
+  if (resEl) resEl.innerHTML = renderWorkshopResourcesHtml(snap);
+
+  patchWorkshopGridFromSnap(snap);
+  renderWorkshopInteractionBar(snap);
+  renderWorkshopTasksPanel(snap);
+  refreshWorkshopDeviceDetailPanel(snap, opts);
+
+  // 同步委任 checkbox 状态（实时刷新时保持 checkbox 与后端一致）
+  const delCb = root.querySelector(".workshop-delegate-cb");
+  if (delCb && delCb.checked !== !!snap.delegation_on) delCb.checked = !!snap.delegation_on;
+  const delegStatus = root.querySelector(".workshop-delegation-status");
+  if (delegStatus && snap.delegation_action_zh) {
+    delegStatus.textContent = snap.delegation_action_zh;
   }
 
-  hitBtn.disabled = false;
-  submitBtn.disabled = true;
-  successes = 0;
-  meta.textContent = "命中 0 / 3";
-
-  hitBtn.onclick = () => {
-    const t = Number(needle.dataset.t || "0");
-    if (Math.abs(t - greenCenter) <= 0.11) {
-      successes++;
-      meta.textContent = `命中 ${successes} / 3`;
-      placeGreen();
-      if (successes >= 3) {
-        if (facilitySimRaf != null) cancelAnimationFrame(facilitySimRaf);
-        facilitySimRaf = null;
-        hitBtn.disabled = true;
-        meta.textContent = "校准完成，可提交结算。";
-        submitBtn.disabled = false;
+  // 疲劳面板实时刷新（休息完成后即时更新 UI）
+  const fatigueWrap = root.querySelector(".workshop-scene-fatigue");
+  const fatigueList = root.querySelector(".workshop-fatigue-list");
+  if (fatigueWrap && fatigueList) {
+    const tired = (snap.npc_fatigue || []).filter((row) => row.needs_rest);
+    if (tired.length) {
+      fatigueWrap.classList.remove("hidden");
+      fatigueList.replaceChildren();
+      for (const row of tired) {
+        const line = document.createElement("div");
+        line.className = "workshop-fatigue-row";
+        line.innerHTML = `<span>${row.label_zh}</span>`;
+        const rb = document.createElement("button");
+        rb.type = "button";
+        rb.className = "workshop-btn workshop-btn--sm";
+        rb.textContent = "休息";
+        rb.addEventListener("click", () => postWorkshopRestNpc(row.id));
+        line.appendChild(rb);
+        fatigueList.appendChild(line);
       }
     } else {
-      showToast("未命中稳定区：指针需在绿色区间内。", 2400);
+      fatigueWrap.classList.add("hidden");
     }
-  };
+  }
+}
 
-  submitBtn.onclick = async () => {
-    const aid = sel.value;
-    const row = (overlay.activities || []).find((x) => String(x.activity_id) === String(aid));
-    if (!aid || !row) {
-      showToast("请选择一项作业。", 2200);
+function renderWorkshopInteractionBar(snap) {
+  const root = workshopMapEl;
+  if (!root) return;
+  const bar = root.querySelector(".workshop-interaction-bar");
+  const modeEl = root.querySelector(".workshop-interaction-mode");
+  const cancelBtn = root.querySelector(".workshop-cancel-build");
+  if (!bar || !modeEl) return;
+  if (workshopBuildType) {
+    const entry = workshopCatalogEntry(snap, workshopBuildType);
+    bar.classList.remove("hidden");
+    modeEl.textContent = entry?.label_zh || workshopBuildType;
+    cancelBtn?.classList.remove("hidden");
+    if (cancelBtn) cancelBtn.textContent = "取消建造";
+  } else if (workshopMoveFrom) {
+    const moveDev = workshopMoveDeviceEntry(snap, workshopMoveFrom);
+    bar.classList.remove("hidden");
+    modeEl.textContent = moveDev ? `移动 ${moveDev.label_zh}` : "移动设备";
+    cancelBtn?.classList.remove("hidden");
+    if (cancelBtn) cancelBtn.textContent = "取消移动";
+  } else if (workshopSelected) {
+    const cell = workshopCellAt(snap, workshopSelected.x, workshopSelected.y);
+    bar.classList.remove("hidden");
+    modeEl.textContent = cell?.label_zh || `格 ${workshopSelected.x},${workshopSelected.y}`;
+    cancelBtn?.classList.add("hidden");
+  } else {
+    bar.classList.add("hidden");
+    cancelBtn?.classList.add("hidden");
+  }
+}
+
+function renderWorkshopCellInspector(_cell, _snap) {
+  /* 左栏设备预览已移除，详情集中在右侧 */
+}
+
+function renderWorkshopEmptyCellDetail(detailWrap, detailBody, snap, x, y) {
+  // 不再弹出快捷建造面板；用户从右上角建造目录中选择设备后直接点击空格放置
+  detailWrap.classList.add("hidden");
+}
+
+function bindWorkshopMapInteraction(root) {
+  if (root.dataset.interactionBound === "1") return;
+  root.dataset.interactionBound = "1";
+
+  root.addEventListener("click", (ev) => {
+    if (!isWorkshopOpen()) return;
+    if (ev.target.closest(".workshop-cancel-build")) {
+      workshopBuildType = null;
+      workshopCancelMoveMode();
+      renderWorkshopScene(workshopUiSnap);
       return;
     }
-    if (!row.can_run_now) {
-      showToast(row.blocked_reason_zh || "当前不可执行。", 3400);
+    const btn = ev.target.closest(".workshop-grid-cell");
+    if (!btn || btn.disabled) return;
+    const gridEl = root.querySelector(".workshop-scene-grid");
+    if (!gridEl?.contains(btn)) return;
+    const x = parseInt(btn.dataset.x, 10);
+    const y = parseInt(btn.dataset.y, 10);
+    if (Number.isNaN(x) || Number.isNaN(y)) return;
+    const cell = workshopCellAt(workshopUiSnap, x, y);
+    onWorkshopCellClick(x, y, cell);
+  });
+
+  root.addEventListener("mouseover", (ev) => {
+    if (!isWorkshopOpen()) return;
+    const btn = ev.target.closest(".workshop-grid-cell");
+    const gridEl = root.querySelector(".workshop-scene-grid");
+    if (!btn || !gridEl?.contains(btn)) return;
+    const x = parseInt(btn.dataset.x, 10);
+    const y = parseInt(btn.dataset.y, 10);
+    if (Number.isNaN(x) || Number.isNaN(y)) return;
+    workshopHoverCell = { x, y };
+    const cell = workshopCellAt(workshopUiSnap, x, y);
+    renderWorkshopCellInspector(cell, workshopUiSnap);
+  });
+
+  root.addEventListener("dblclick", (ev) => {
+    if (!isWorkshopOpen()) return;
+    const btn = ev.target.closest(".workshop-grid-cell");
+    if (!btn || btn.disabled) return;
+    const gridEl = root.querySelector(".workshop-scene-grid");
+    if (!gridEl?.contains(btn)) return;
+    const x = parseInt(btn.dataset.x, 10);
+    const y = parseInt(btn.dataset.y, 10);
+    const cell = workshopCellAt(workshopUiSnap, x, y);
+    const anchor = workshopAnchorOf(cell);
+    if (anchor && cell?.is_anchor) postWorkshopToggle(anchor.x, anchor.y);
+  });
+
+  root.addEventListener("keydown", (ev) => {
+    if (!isWorkshopOpen()) return;
+    if (ev.key === "Escape") {
+      if (handleWorkshopEscapeKey()) ev.preventDefault();
       return;
     }
-    if (successes < 3) {
-      showToast("请先完成 3 次校准。", 2200);
-      return;
+    if (ev.key === "b" || ev.key === "B") {
+      if (workshopBuildType) {
+        workshopBuildType = null;
+        renderWorkshopScene(workshopUiSnap);
+        ev.preventDefault();
+      }
     }
-    try {
-      const j = await fetchJSON(gameApiUrl("/api/sim/activity/run"), {
-        method: "POST",
-        body: JSON.stringify({ activity_id: aid }),
+  });
+}
+
+function workshopNormalizeNeedItems(task) {
+  if (Array.isArray(task?.need_items) && task.need_items.length) {
+    return task.need_items;
+  }
+  const need = task?.need;
+  if (need && typeof need === "object") {
+    return Object.entries(need).map(([k, v]) => ({
+      key: k,
+      label_zh: WORKSHOP_RES_ZH[k] || k,
+      have: 0,
+      need: Number(v) || 0,
+      met: false,
+      pct: 0,
+    }));
+  }
+  return [];
+}
+
+function renderWorkshopTasksPanel(snap) {
+  const tasksEl = workshopMapEl?.querySelector(".workshop-scene-tasks");
+  if (!tasksEl) return;
+  const tasks = (snap?.tasks || []).filter((t) => !t.done);
+  tasksEl.replaceChildren();
+
+  if (!tasks.length) return;
+
+  const activeWrap = document.createElement("div");
+  activeWrap.className = "workshop-tasks-active";
+
+  const statusRank = { ready: 0, progress: 1, pending: 2 };
+  const statusShort = { ready: "可交", progress: "进行", pending: "待产" };
+  const sorted = [...tasks].sort((a, b) => {
+    const ra = statusRank[a.status || "pending"] ?? 9;
+    const rb = statusRank[b.status || "pending"] ?? 9;
+    return ra - rb;
+  });
+
+  for (const t of sorted) {
+    const card = document.createElement("article");
+    const st = t.status || (t.can_deliver ? "ready" : "pending");
+    card.className = `workshop-task-card workshop-task-card--${st}${t.can_deliver ? " workshop-task-card--highlight" : ""}`;
+    card.dataset.taskId = t.id || "";
+
+    const head = document.createElement("div");
+    head.className = "workshop-task-card-head";
+    const statusEl = document.createElement("span");
+    statusEl.className = `workshop-task-status workshop-task-status--${st}`;
+    statusEl.textContent = statusShort[st] || t.status_zh || "—";
+    head.appendChild(statusEl);
+    card.appendChild(head);
+
+    const needItems = workshopNormalizeNeedItems(t);
+    const materials = document.createElement("div");
+    materials.className = "workshop-task-materials";
+    if (needItems.length) {
+      for (const item of needItems) {
+        const line = document.createElement("div");
+        line.className = `workshop-task-material-line${item.met ? " workshop-task-material-line--met" : ""}`;
+        line.innerHTML = `<span class="workshop-task-material-name">${item.label_zh || item.key || "物资"}</span>
+          <span class="workshop-task-material-qty">${item.have ?? 0} / ${item.need ?? 0}</span>`;
+        materials.appendChild(line);
+      }
+    } else if (t.need_display_zh || t.progress_zh) {
+      const line = document.createElement("div");
+      line.className = "workshop-task-material-line";
+      line.textContent = t.need_display_zh || t.progress_zh;
+      materials.appendChild(line);
+    } else {
+      const line = document.createElement("div");
+      line.className = "workshop-task-material-line workshop-task-material-line--empty";
+      line.textContent = "暂无物资要求";
+      materials.appendChild(line);
+    }
+    card.appendChild(materials);
+
+    if (t.reward_items?.length || t.reward_zh) {
+      const rewards = document.createElement("div");
+      rewards.className = "workshop-task-rewards";
+      rewards.setAttribute("aria-label", "奖励");
+      for (const item of t.reward_items || []) {
+        const chip = document.createElement("span");
+        chip.className = `workshop-task-reward-chip${item.hidden ? " workshop-task-reward-chip--hidden" : ""}`;
+        chip.textContent = item.display_zh || (item.hidden ? "???" : `${item.label_zh}×${item.amount}`);
+        rewards.appendChild(chip);
+      }
+      if (!rewards.children.length && t.reward_zh) {
+        const chip = document.createElement("span");
+        chip.className = "workshop-task-reward-chip";
+        chip.textContent = t.reward_zh;
+        rewards.appendChild(chip);
+      }
+      card.appendChild(rewards);
+    }
+
+    if (t.can_deliver && !snap.abandoned) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "workshop-btn workshop-btn--primary workshop-btn--sm workshop-task-deliver";
+      b.textContent = "交付";
+      b.addEventListener("click", () => postWorkshopDeliverTask(t.id));
+      card.appendChild(b);
+    }
+
+    activeWrap.appendChild(card);
+  }
+
+  tasksEl.appendChild(activeWrap);
+}
+
+function renderWorkshopScene(snap) {
+  if (!snap) return;
+  workshopUiSnap = snap;
+  const root = ensureWorkshopMap();
+  const titleEl = root.querySelector(".workshop-scene-title");
+  if (titleEl) titleEl.textContent = snap.name_zh || "基地核心";
+  const leadEl = root.querySelector(".workshop-scene-lead");
+  if (leadEl) leadEl.textContent = snap.lead_zh || "";
+
+  // 同步委任 checkbox 状态与委任日志
+  const delCb = root.querySelector(".workshop-delegate-cb");
+  if (delCb) delCb.checked = !!snap.delegation_on;
+  const delegStatus = root.querySelector(".workshop-delegation-status");
+  if (delegStatus) delegStatus.textContent = snap.delegation_action_zh || "";
+
+  const gate = root.querySelector(".workshop-scene-gate");
+  const body = root.querySelector(".workshop-scene-body");
+  if (!gate || !body) {
+    showToast("工坊界面结构异常，请刷新页面。", 4200);
+    exitWorkshopMapScene();
+    return;
+  }
+
+  if (!snap.built) {
+    gate.classList.remove("hidden");
+    body.classList.add("hidden");
+    const cost = snap.build_cost || { energy: 30, parts: 15 };
+    const br = snap.base_resources || {};
+    const canAffordSite =
+      (br.energy ?? 0) >= (cost.energy ?? 0) && (br.parts ?? 0) >= (cost.parts ?? 0);
+    let gateHtml = "";
+    if (!snap.blueprint_known && !snap.blueprint_available) {
+      gateHtml = `<p class="workshop-gate-msg">尚未获得自动化设施蓝图。推进第一幕并完成基地相关节点后，小胖会提示基地核心中的改造空间。</p>`;
+    } else if (!snap.blueprint_known) {
+      gateHtml = `<p class="workshop-gate-msg">蓝图已就绪：小胖说此处可改造成自动化产线。</p>
+        <button type="button" class="workshop-btn workshop-btn--primary workshop-discover-btn">查看蓝图</button>`;
+    } else {
+      gateHtml = `<p class="workshop-gate-msg">一次性改造消耗：能源 ${cost.energy} + 零件 ${cost.parts}。改造后永久开放 10×10 分区生产网格。</p>
+        <p class="workshop-gate-msg">首次进入调拨基地资源至 能源 ${(snap.entry_resource_floor || {}).energy ?? 100} · 零件 ${(snap.entry_resource_floor || {}).parts ?? 55}（仅首次）。</p>
+        <p class="workshop-gate-msg">改造消耗 能源 ${cost.energy} + 零件 ${cost.parts}；完成后免费配装采矿机、冶炼厂、仓储柜。再建 3D 打印机（能源 30 + 零件 15），能源不足可建发电站（能源 20 + 零件 10）。</p>
+        <p class="workshop-gate-msg">当前基地：能源 ${br.energy ?? 0} · 零件 ${br.parts ?? 0}${canAffordSite ? "" : "（不足，无法改造）"}</p>
+        <button type="button" class="workshop-btn workshop-btn--primary workshop-construct-btn"${canAffordSite ? "" : " disabled"}>开始改造设施</button>`;
+    }
+    gate.innerHTML = gateHtml;
+    gate.querySelector(".workshop-discover-btn")?.addEventListener("click", () => openWorkshopScene());
+    gate.querySelector(".workshop-construct-btn")?.addEventListener("click", () => postWorkshopConstruct());
+    return;
+  }
+
+  gate.classList.add("hidden");
+  body.classList.remove("hidden");
+
+  body.querySelector(".workshop-abandoned-banner")?.remove();
+  const leftPanel = root.querySelector(".workshop-map-left");
+  if (snap.abandoned) {
+    body.classList.add("workshop-scene-body--abandoned");
+    const rehab = document.createElement("div");
+    rehab.className = "workshop-abandoned-banner";
+    const rc = snap.rehab_cost || { energy: 50, parts: 30 };
+    rehab.innerHTML = `<p>自动化设施因长期能源枯竭已停摆（已连续 ${snap.energy_deficit_days ?? 0} 日赤字）。</p>
+      <button type="button" class="workshop-btn workshop-btn--primary workshop-rehab-btn">重启设施（能源 ${rc.energy} + 零件 ${rc.parts}）</button>`;
+    rehab.querySelector(".workshop-rehab-btn")?.addEventListener("click", () => postWorkshopRehabilitate());
+    leftPanel?.prepend(rehab);
+  } else {
+    body.classList.remove("workshop-scene-body--abandoned");
+  }
+
+  const resEl = root.querySelector(".workshop-scene-resources");
+  if (resEl) resEl.innerHTML = renderWorkshopResourcesHtml(snap);
+
+  renderWorkshopTasksPanel(snap);
+
+  const gridSize = snap.grid_size || 10;
+  const gridParts = ensureWorkshopGridStructure(root);
+  const stageEl = gridParts?.stage;
+  const gridEl = gridParts?.gridEl;
+  const zoneWrap = gridParts?.zoneWrap;
+  const svgEl = gridParts?.svgEl;
+  if (!gridEl || !zoneWrap || !svgEl) {
+    showToast("设施网格加载失败，已返回大地图。", 4200);
+    exitWorkshopMapScene();
+    return;
+  }
+  if (stageEl) stageEl.style.setProperty("--workshop-grid-size", String(gridSize));
+  gridEl.style.setProperty("--workshop-grid-size", String(gridSize));
+  gridEl.replaceChildren();
+
+  zoneWrap.replaceChildren();
+  for (const z of snap.zones || []) {
+    const el = document.createElement("div");
+    el.className = `workshop-zone-label workshop-zone-label--${z.id} workshop-zone-label--silent`;
+    el.style.setProperty("--zx0", String(z.x0));
+    el.style.setProperty("--zy0", String(z.y0));
+    el.style.setProperty("--zx1", String(z.x1));
+    el.style.setProperty("--zy1", String(z.y1));
+    el.style.setProperty("--grid-size", String(gridSize));
+    zoneWrap.appendChild(el);
+  }
+
+  const buildEntry = workshopBuildType ? workshopCatalogEntry(snap, workshopBuildType) : null;
+  const moveEntry = workshopMoveFrom ? workshopMoveDeviceEntry(snap, workshopMoveFrom) : null;
+
+  const grid = snap.grid || [];
+  for (let y = 0; y < gridSize; y++) {
+    for (let x = 0; x < gridSize; x++) {
+      const cell = grid[y]?.[x];
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "workshop-grid-cell";
+      btn.dataset.x = String(x);
+      btn.dataset.y = String(y);
+      const isMoveSource =
+        workshopMoveFrom &&
+        cell &&
+        cell.anchor_x === workshopMoveFrom.x &&
+        cell.anchor_y === workshopMoveFrom.y;
+      if (cell) {
+        if (!cell.is_anchor) {
+          btn.classList.add("workshop-grid-cell--ext");
+          if (isMoveSource) btn.classList.add("workshop-grid-cell--move-source");
+          btn.title = isMoveSource ? `${cell.label_zh}（待移动）` : `${cell.label_zh}（占用）— 点击选中设备`;
+        } else {
+          btn.classList.add("workshop-grid-cell--device");
+          btn.classList.add(`workshop-grid-cell--type-${cell.type}`);
+          if (isMoveSource) btn.classList.add("workshop-grid-cell--move-source");
+          workshopApplyCellStatusClasses(btn, cell);
+          const pct = cell.progress_pct ?? 0;
+          btn.style.setProperty("--progress-pct", `${pct}%`);
+          btn.title = isMoveSource
+            ? `${cell.label_zh} — 点击目标格移动（Esc 取消）`
+            : (cell.status_zh || "") + " — 双击切换启停";
+          btn.innerHTML = `${workshopDeviceIconMarkup(cell.type)}
+            <span class="workshop-cell-progress" style="width:${pct}%"></span>`;
+        }
+      } else if (workshopMoveFrom && moveEntry) {
+        if (workshopCanMoveTo(snap, workshopMoveFrom, x, y)) {
+          btn.classList.add("workshop-grid-cell--build-valid");
+          btn.textContent = "→";
+          btn.title = `移动至此处（${moveEntry.label_zh}）`;
+        } else {
+          btn.classList.add("workshop-grid-cell--build-invalid");
+          btn.disabled = true;
+          btn.title = "此格无法放置（越界或占用）";
+        }
+      } else if (workshopBuildType && buildEntry) {
+        const canAfford = workshopCanAffordBuild(snap, buildEntry);
+        if (workshopCanPlaceAt(snap, x, y, buildEntry) && canAfford) {
+          btn.classList.add("workshop-grid-cell--build-valid");
+          btn.textContent = "+";
+          btn.title = `可放置 ${buildEntry.label_zh}`;
+        } else if (workshopCanPlaceAt(snap, x, y, buildEntry) && !canAfford) {
+          btn.classList.add("workshop-grid-cell--build-invalid");
+          btn.title = `资源不足：${workshopAffordReason(snap, buildEntry)}`;
+        } else {
+          btn.classList.add("workshop-grid-cell--build-invalid");
+          btn.disabled = true;
+          btn.title = "此格无法放置（越界或占用）";
+        }
+      } else {
+        btn.classList.add("workshop-grid-cell--empty");
+        btn.title = "空格 — 点击建造或查看";
+      }
+      if (workshopSelected && workshopSelected.x === x && workshopSelected.y === y) {
+        btn.classList.add("workshop-grid-cell--selected");
+      }
+      if (workshopHoverCell && workshopHoverCell.x === x && workshopHoverCell.y === y) {
+        btn.classList.add("workshop-grid-cell--hover");
+      }
+      gridEl.appendChild(btn);
+    }
+  }
+
+  const links = snap.logistics_links || [];
+  if (links.length) {
+    svgEl.classList.remove("hidden");
+    svgEl.setAttribute("viewBox", `0 0 ${gridSize} ${gridSize}`);
+    svgEl.setAttribute("pointer-events", "none");
+    svgEl.replaceChildren();
+    for (const ln of links) {
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", String(ln.x0 + 0.5));
+      line.setAttribute("y1", String(ln.y0 + 0.5));
+      line.setAttribute("x2", String(ln.x1 + 0.5));
+      line.setAttribute("y2", String(ln.y1 + 0.5));
+      line.setAttribute("class", `workshop-logistics-line workshop-logistics-line--${ln.kind || "storage"}`);
+      svgEl.appendChild(line);
+    }
+  } else {
+    svgEl.classList.add("hidden");
+    svgEl.replaceChildren();
+  }
+
+  const buildList = root.querySelector(".workshop-build-list");
+  if (buildList && !root.querySelector(".workshop-build-head")) {
+    const buildHead = document.createElement("p");
+    buildHead.className = "workshop-build-head";
+    buildHead.textContent = "建造 · 消耗基地资源";
+    buildList.before(buildHead);
+  }
+  buildList.replaceChildren();
+  for (const d of snap.build_catalog || []) {
+    const afford = workshopCanAffordBuild(snap, d);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.disabled = !!snap.abandoned || !afford;
+    b.className = `workshop-build-item${workshopBuildType === d.type ? " workshop-build-item--active" : ""}${!afford ? " workshop-build-item--blocked" : ""}`;
+    const buildIcon = explorerIconImgHtml(d.type, "workshop-build-item__icon", 22);
+    b.innerHTML = `${buildIcon}<strong>${d.label_zh}</strong>${workshopBuildCostHtml(d.build, snap)}`;
+    b.title = `建造 ${d.label_zh}：${d.build_cost_zh || workshopBuildCostText(d.build)}（基地资源）`;
+    if (!afford) b.title = `资源不足：${workshopAffordReason(snap, d)}`;
+    b.addEventListener("click", () => {
+      if (!afford) {
+        showToast(`资源不足：${workshopAffordReason(snap, d)}`, 3600);
+        return;
+      }
+      workshopBuildType = workshopBuildType === d.type ? null : d.type;
+      workshopCancelMoveMode();
+      workshopSelected = null;
+      renderWorkshopScene(workshopUiSnap);
+      if (workshopBuildType) showToast(`放置 ${d.label_zh}`, 2200);
+    });
+    buildList.appendChild(b);
+  }
+
+  refreshWorkshopDeviceDetailPanel(snap, { full: true });
+
+  renderWorkshopInteractionBar(snap);
+
+  const capsWrap = root.querySelector(".workshop-scene-caps");
+  const capsList = root.querySelector(".workshop-caps-list");
+  const capsEnable = root.querySelector(".workshop-caps-enable-cb");
+  capsEnable.checked = snap.stop_caps_enabled !== false;
+  capsList.replaceChildren();
+  const capKeys = ["parts", "medical_pack", "alloy", "ore", "components"];
+  for (const k of capKeys) {
+    const row = document.createElement("label");
+    row.className = "workshop-cap-row";
+    const raw = (snap.stop_caps || {})[k];
+    const val = raw != null ? Number(raw) : (WORKSHOP_DEFAULT_STOP_CAPS[k] ?? 0);
+    row.innerHTML = `<span>${WORKSHOP_RES_ZH[k] || k}</span><input type="number" min="0" max="9999" data-cap-key="${k}" value="${val}" class="workshop-cap-input" title="0 表示该资源不限产" />`;
+    capsList.appendChild(row);
+  }
+  capsEnable.onchange = () => postWorkshopSetCaps(null, capsEnable.checked);
+  capsList.querySelectorAll(".workshop-cap-input").forEach((inp) => {
+    inp.onchange = () => {
+      const caps = {};
+      capsList.querySelectorAll(".workshop-cap-input").forEach((el) => {
+        caps[el.dataset.capKey] = parseInt(el.value, 10) || 0;
       });
-      closeFacilitySimLayerIfOpen();
-      showToast(
-        j.activity_success ? "作业顺利完成，资源已入账。" : "作业受挫：行前成本已付，增益未达标。",
-        3600,
-      );
-      await refreshOpenStoryPanel();
-    } catch (e) {
-      showToast(e.message || String(e), 4200);
+      postWorkshopSetCaps(caps, capsEnable.checked);
+    };
+  });
+
+  const tradeWrap = root.querySelector(".workshop-scene-trade");
+  const tradeList = root.querySelector(".workshop-trade-list");
+  if (snap.comm_trade_available && (snap.trade_offers || []).length) {
+    tradeWrap.classList.remove("hidden");
+    tradeList.replaceChildren();
+    for (const t of snap.trade_offers) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "workshop-btn workshop-btn--ghost workshop-btn--sm";
+      b.disabled = snap.abandoned || !t.available;
+      b.textContent = t.label_zh;
+      b.addEventListener("click", () => postWorkshopTrade(t.id));
+      tradeList.appendChild(b);
     }
-  };
+  } else {
+    tradeWrap.classList.add("hidden");
+  }
 
-  facilitySimRaf = requestAnimationFrame(tick);
+  const fatigueWrap = root.querySelector(".workshop-scene-fatigue");
+  const fatigueList = root.querySelector(".workshop-fatigue-list");
+  const tired = (snap.npc_fatigue || []).filter((row) => row.needs_rest);
+  if (tired.length) {
+    fatigueWrap.classList.remove("hidden");
+    fatigueList.replaceChildren();
+    for (const row of tired) {
+      const line = document.createElement("div");
+      line.className = "workshop-fatigue-row";
+      line.innerHTML = `<span>${row.label_zh}</span>`;
+      const rb = document.createElement("button");
+      rb.type = "button";
+      rb.className = "workshop-btn workshop-btn--sm";
+      rb.textContent = "休息";
+      rb.addEventListener("click", () => postWorkshopRestNpc(row.id));
+      line.appendChild(rb);
+      fatigueList.appendChild(line);
+    }
+  } else {
+    fatigueWrap.classList.add("hidden");
+  }
 
-  bd.classList.remove("hidden");
-  bd.setAttribute("aria-hidden", "false");
+  refreshWorkshopTutorialLayout();
+}
+
+function onWorkshopCellClick(x, y, cell) {
+  if (snapGuardAbandoned()) return;
+  if (workshopMoveFrom) {
+    if (workshopCanMoveTo(workshopUiSnap, workshopMoveFrom, x, y)) {
+      postWorkshopMove(workshopMoveFrom.x, workshopMoveFrom.y, x, y);
+      return;
+    }
+    const anchor = workshopAnchorOf(cell);
+    if (anchor && anchor.x === workshopMoveFrom.x && anchor.y === workshopMoveFrom.y) {
+      showToast("请点击绿色高亮格作为新位置。", 2400);
+      return;
+    }
+    showToast("此格无法放置设备。", 2400);
+    return;
+  }
+  if (workshopBuildType) {
+    const entry = workshopCatalogEntry(workshopUiSnap, workshopBuildType);
+    if (!entry) {
+      showToast("未知设备类型。", 2400);
+      return;
+    }
+    if (!workshopCanAffordBuild(workshopUiSnap, entry)) {
+      showToast(`资源不足：${workshopAffordReason(workshopUiSnap, entry)}`, 3600);
+      return;
+    }
+    if (cell || !workshopCanPlaceAt(workshopUiSnap, x, y, entry)) {
+      showToast("此格无法放置设备。", 2400);
+      return;
+    }
+    postWorkshopBuild(x, y, workshopBuildType);
+    return;
+  }
+  const anchor = workshopAnchorOf(cell);
+  if (anchor) workshopSelected = { x: anchor.x, y: anchor.y };
+  else workshopSelected = { x, y };
+  refreshWorkshopSelectionHighlight();
+  refreshWorkshopDeviceDetailPanel(workshopUiSnap, { full: true, scroll: true });
+  renderWorkshopInteractionBar(workshopUiSnap);
+}
+
+function snapGuardAbandoned() {
+  if (workshopUiSnap?.abandoned) {
+    showToast("工坊已停摆，请先在左侧重启。", 2800);
+    return true;
+  }
+  return false;
+}
+
+async function openWorkshopScene(fromId = "west_shaft") {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/workshop/enter"), { method: "POST", body: "{}" });
+    latestState = data;
+    renderMgmtResourcesHud(data.session);
+    renderMgmtLogStrip(data.management_recent);
+    workshopUiSnap = workshopSnapFromData(data);
+    enterWorkshopMapScene(fromId);
+    if (workshopUiSnap) renderWorkshopScene(workshopUiSnap);
+    maybeStartWorkshopTutorial(workshopUiSnap);
+    if (workshopPollTimer != null) clearInterval(workshopPollTimer);
+    workshopPollTimer = setInterval(async () => {
+      if (!isWorkshopOpen()) {
+        clearInterval(workshopPollTimer);
+        workshopPollTimer = null;
+        return;
+      }
+      try {
+        await syncWorkshopFromResponse(
+          await fetchJSON(gameApiUrl("/api/sim/workshop/enter"), { method: "POST", body: "{}" }),
+          { soft: true },
+        );
+      } catch {
+        /* ignore poll errors */
+      }
+    }, 3000);
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function openWestShaftSimScene(fromId) {
+  return openWorkshopScene(fromId);
+}
+
+async function postWorkshopConstruct() {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/workshop/construct"), { method: "POST", body: "{}" });
+    await syncWorkshopFromResponse(data);
+    if (workshopTutorialActive) {
+      workshopUiSnap = workshopSnapFromData(data);
+      const steps = workshopTutorialSteps(workshopUiSnap);
+      const idx = steps.findIndex((s) => s.id === "resources");
+      if (idx >= 0) workshopTutorialStep = idx;
+      renderWorkshopScene(workshopUiSnap);
+      renderWorkshopTutorialStep();
+    }
+    showToast("基地核心自动化设施改造完成。", 3200);
+  } catch (e) {
+    try {
+      const st = await fetchJSON(gameApiUrl("/api/state"));
+      await syncWorkshopFromResponse(st);
+    } catch {
+      /* ignore refresh failure */
+    }
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopBuild(x, y, deviceType) {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/workshop/build"), {
+      method: "POST",
+      body: JSON.stringify({ x, y, device_type: deviceType }),
+    });
+    workshopBuildType = null;
+    workshopSelected = { x, y };
+    await syncWorkshopFromResponse(data);
+    showToast("设备已建造。", 2400);
+  } catch (e) {
+    try {
+      const st = await fetchJSON(gameApiUrl("/api/state"));
+      await syncWorkshopFromResponse(st);
+    } catch {
+      /* ignore refresh failure */
+    }
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopUpgrade(x, y) {
+  try {
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/upgrade"), {
+        method: "POST",
+        body: JSON.stringify({ x, y }),
+      }),
+      { soft: true, full: true },
+    );
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopDemolish(x, y) {
+  try {
+    workshopSelected = null;
+    workshopCancelMoveMode();
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/demolish"), {
+        method: "POST",
+        body: JSON.stringify({ x, y }),
+      }),
+    );
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopMove(fromX, fromY, toX, toY) {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/workshop/move"), {
+      method: "POST",
+      body: JSON.stringify({ from_x: fromX, from_y: fromY, to_x: toX, to_y: toY }),
+    });
+    workshopCancelMoveMode();
+    workshopSelected = { x: toX, y: toY };
+    await syncWorkshopFromResponse(data);
+    showToast("设备已移动。", 2400);
+  } catch (e) {
+    try {
+      const st = await fetchJSON(gameApiUrl("/api/state"));
+      await syncWorkshopFromResponse(st);
+    } catch {
+      /* ignore refresh failure */
+    }
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopToggle(x, y) {
+  try {
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/toggle"), {
+        method: "POST",
+        body: JSON.stringify({ x, y }),
+      }),
+      { soft: true, full: true },
+    );
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopAssignNpc(x, y, npcId) {
+  try {
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/assign_npc"), {
+        method: "POST",
+        body: JSON.stringify({ x, y, npc_id: npcId }),
+      }),
+      { soft: true },
+    );
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopSetRecipe(x, y, recipe) {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/workshop/set_recipe"), {
+      method: "POST",
+      body: JSON.stringify({ x, y, recipe }),
+    });
+    await syncWorkshopFromResponse(data, { soft: true, full: true });
+    const dev = workshopSelectedDevice(workshopUiSnap);
+    if (dev?.type === "printer") {
+      showToast(`3D 打印机已切换为${dev.recipe_zh || workshopPrinterRecipeLabel(dev.recipe)}。`, 2600);
+    }
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopDelegate(enabled) {
+  try {
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/delegate"), {
+        method: "POST",
+        body: JSON.stringify({ enabled }),
+      }),
+      { soft: true },
+    );
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopImportOre(amount) {
+  try {
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/import_source_ore"), {
+        method: "POST",
+        body: JSON.stringify({ amount }),
+      }),
+      { soft: true },
+    );
+    showToast("源矿已导入工坊缓冲。", 2400);
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopExport(resource, amount) {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/workshop/export"), {
+      method: "POST",
+      body: JSON.stringify({ resource, amount }),
+    });
+    await syncWorkshopFromResponse(data, { soft: true });
+    const result = data.export_result || {};
+    const exported = Object.entries(result).map(([k, v]) => {
+      const label = { parts: "零件", medical: "医疗包" }[k] || k;
+      return `${label} ×${v}`;
+    }).join("、");
+    showToast(exported ? `${exported} 已运回基地。` : "物资已运回基地。", 2400);
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopSetCaps(caps, enabled) {
+  try {
+    const body = {};
+    if (caps) body.caps = caps;
+    if (enabled != null) body.enabled = enabled;
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/set_caps"), {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+      { soft: true },
+    );
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopDeliverTask(taskId) {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/workshop/deliver_task"), {
+      method: "POST",
+      body: JSON.stringify({ task_id: taskId }),
+    });
+    await syncWorkshopFromResponse(data, { soft: true });
+    const delivery = data.delivery_result || {};
+    let msg = "生产指标已交付。";
+    if (delivery.reward_zh) msg += ` 获得 ${delivery.reward_zh}`;
+    if (delivery.reveal_zh) msg += ` ${delivery.reveal_zh}`;
+    showToast(msg, delivery.reveal_zh ? 5200 : 3600);
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopTrade(tradeId) {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/workshop/trade"), {
+      method: "POST",
+      body: JSON.stringify({ trade_id: tradeId }),
+    });
+    await syncWorkshopFromResponse(data, { soft: true });
+    showToast("通讯阵列交易完成。", 2600);
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopRestNpc(npcId) {
+  try {
+    const npcLabel = (workshopUiSnap?.npc_fatigue || []).find((r) => r.id === npcId)?.label_zh || npcId;
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/rest_npc"), {
+        method: "POST",
+        body: JSON.stringify({ npc_id: npcId }),
+      }),
+      { soft: true },
+    );
+    showToast(`${npcLabel}已安排休息，疲劳清零。设备已撤下，委任自动分配已暂停。`, 3200);
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+async function postWorkshopRehabilitate() {
+  try {
+    await syncWorkshopFromResponse(
+      await fetchJSON(gameApiUrl("/api/sim/workshop/rehabilitate"), { method: "POST", body: "{}" }),
+    );
+    showToast("基地核心自动化设施已重新启动。", 3200);
+  } catch (e) {
+    showErrorToast(e);
+  }
+}
+
+/** 基地日 +1：推进世界天数，结算远征归国与资源生产 */
+async function postAdvanceWorldDay() {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/sim/advance_world_day"), { method: "POST", body: "{}" });
+    const wd = data?.world_day_after ?? data?.sandbox?.world_day ?? data?.narrative?.world_day ?? "?";
+    // 检查是否自动恢复到了剧情节拍
+    const newPhase = data?.sandbox?.story_phase || data?.session?.story_phase || "";
+    if (String(newPhase).trim() !== "Sandbox") {
+      showToast(`休整结束——已推进至第 ${wd} 日，回归剧情节拍。`, 4200);
+    } else {
+      showToast(`基地日推进至第 ${wd} 日${data?.expeditions_settled ? " · 远征归国已结算" : ""}`, 3200);
+    }
+    // 刷新全局状态
+    latestState = data;
+    renderObjectivesPanel(data);
+    renderMgmtResourcesHud(data.session);
+    renderMgmtLogStrip(data.management_recent);
+    renderSandboxDock(data);
+    npcScheduleSnapshot = scheduledNpcWorldPositions(data);
+    syncNpcTargetsFromSchedule(npcScheduleSnapshot.pos);
+    await refreshTopBar();
+  } catch (e) {
+    showErrorToast(e);
+  }
 }
 
 async function postDecryptDatastick(via) {
@@ -1573,6 +4064,9 @@ async function postDecryptDatastick(via) {
   await refreshOpenStoryPanel();
 }
 
+/** 开发者模式：左下角 DEV 按钮 + 一键跳转面板（无需 ?debug=1） */
+let devPanelVisible = false;
+
 async function postDebugJumpNode(nodeId, resetCompleted = true) {
   const data = await fetchJSON(gameApiUrl("/api/debug/jump_node"), {
     method: "POST",
@@ -1583,94 +4077,271 @@ async function postDebugJumpNode(nodeId, resetCompleted = true) {
   await refreshOpenStoryPanel();
 }
 
-/** 地址栏加 ?debug=1 时显示；服务端需 GAME_DEBUG_API=1 */
-function initDebugJumpBar() {
-  const params = new URLSearchParams(location.search);
-  if (params.get("debug") !== "1") return;
+function initDevPanel() {
+  // ── DEV 切换按钮 ──
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "dev-panel-toggle";
+  toggle.textContent = "DEV";
+  toggle.title = "开发者模式 · 剧情节点跳转";
+  toggle.setAttribute("aria-label", "切换开发者面板");
 
-  const bar = document.createElement("aside");
-  bar.className = "debug-jump-bar";
-  bar.setAttribute("aria-label", "调试：剧情节点跳转");
+  // ── 面板 ──
+  const panel = document.createElement("aside");
+  panel.className = "dev-panel";
+  panel.setAttribute("aria-label", "开发者：剧情节点跳转");
 
-  const title = document.createElement("div");
-  title.className = "debug-jump-bar__title";
-  title.textContent = "调试跳转";
-  bar.appendChild(title);
+  // 面板头部
+  const header = document.createElement("div");
+  header.className = "dev-panel__header";
+  const panelTitle = document.createElement("span");
+  panelTitle.className = "dev-panel__title";
+  panelTitle.textContent = "🛠 开发者模式";
+  const currentBadge = document.createElement("span");
+  currentBadge.className = "dev-panel__current";
+  currentBadge.id = "dev-panel-current-node";
+  currentBadge.textContent = "当前：—";
+  header.appendChild(panelTitle);
+  header.appendChild(currentBadge);
+  panel.appendChild(header);
 
-  const note = document.createElement("p");
-  note.className = "debug-jump-bar__hint";
-  note.textContent =
-    "需在游戏 API 进程设置环境变量 GAME_DEBUG_API=1。默认勾选「清空已完成列表」以便重复验证门闩（如 02-01 数据棒解密）。";
-  bar.appendChild(note);
+  // 节点选择行
+  const selectRow = document.createElement("div");
+  selectRow.className = "dev-panel__select-row";
+  const select = document.createElement("select");
+  select.className = "dev-panel__select";
+  select.id = "dev-node-select";
+  select.setAttribute("aria-label", "选择剧情节点");
 
-  const row = document.createElement("div");
-  row.className = "debug-jump-bar__row";
-  const inp = document.createElement("input");
-  inp.type = "text";
-  inp.placeholder = "节点 ID，如 02-01";
-  inp.value = "02-01";
-  inp.className = "debug-jump-bar__input";
-  const go = document.createElement("button");
-  go.type = "button";
-  go.textContent = "跳转";
-  const chk = document.createElement("label");
-  chk.className = "debug-jump-bar__chk";
+  // 加载中占位
+  const loadingOpt = document.createElement("option");
+  loadingOpt.value = "";
+  loadingOpt.textContent = "加载节点列表中…";
+  select.appendChild(loadingOpt);
+
+  const jumpBtn = document.createElement("button");
+  jumpBtn.type = "button";
+  jumpBtn.className = "dev-panel__btn";
+  jumpBtn.textContent = "跳转";
+  jumpBtn.title = "跳转到所选节点";
+
+  selectRow.appendChild(select);
+  selectRow.appendChild(jumpBtn);
+  panel.appendChild(selectRow);
+
+  // 选项行
+  const optRow = document.createElement("div");
+  optRow.className = "dev-panel__row";
+  const chkLabel = document.createElement("label");
+  chkLabel.className = "dev-panel__chk";
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = true;
-  chk.appendChild(cb);
-  chk.appendChild(document.createTextNode(" 清空已完成列表"));
+  cb.id = "dev-reset-completed";
+  chkLabel.appendChild(cb);
+  chkLabel.appendChild(document.createTextNode("清空已完成列表"));
+  optRow.appendChild(chkLabel);
+  panel.appendChild(optRow);
 
-  go.addEventListener("click", async () => {
-    const nid = inp.value.trim();
+  // 操作按钮行
+  const btnRow = document.createElement("div");
+  btnRow.className = "dev-panel__row";
+
+  const refreshNodesBtn = document.createElement("button");
+  refreshNodesBtn.type = "button";
+  refreshNodesBtn.className = "dev-panel__btn";
+  refreshNodesBtn.textContent = "刷新列表";
+  refreshNodesBtn.title = "重新加载节点列表并更新当前节点";
+
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "dev-panel__btn dev-panel__btn--danger";
+  resetBtn.textContent = "重置存档";
+  resetBtn.title = "清除所有存档数据并刷新";
+
+  btnRow.appendChild(refreshNodesBtn);
+  btnRow.appendChild(resetBtn);
+  panel.appendChild(btnRow);
+
+  // 提示
+  const hint = document.createElement("p");
+  hint.className = "dev-panel__hint";
+  hint.id = "dev-panel-hint";
+  hint.textContent = "服务端需 GAME_DEBUG_API=1 才能使用跳转功能。";
+  panel.appendChild(hint);
+
+  // ── 切换逻辑 ──
+  toggle.addEventListener("click", () => {
+    devPanelVisible = !devPanelVisible;
+    if (devPanelVisible) {
+      panel.classList.add("visible");
+      toggle.classList.add("active");
+      loadDebugNodes(select, hint);
+      updateDevCurrentNode(currentBadge);
+    } else {
+      panel.classList.remove("visible");
+      toggle.classList.remove("active");
+    }
+  });
+
+  // 跳转按钮
+  jumpBtn.addEventListener("click", async () => {
+    const nid = select.value;
     if (!nid) return;
     try {
       await postDebugJumpNode(nid, cb.checked);
+      updateDevCurrentNode(currentBadge);
     } catch (e) {
-      showToast(String(e.message || e), 5200);
+      showErrorToast(e, 5200);
     }
   });
-  row.appendChild(inp);
-  row.appendChild(go);
-  bar.appendChild(row);
-  bar.appendChild(chk);
 
-  const presets = document.createElement("div");
-  presets.className = "debug-jump-bar__presets";
-  for (const [lab, id] of [
-    ["02-01", "02-01"],
-    ["02-02", "02-02"],
-    ["PRO-01", "PRO-01"],
-  ]) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = lab;
-    b.addEventListener("click", async () => {
-      inp.value = id;
-      try {
-        await postDebugJumpNode(id, cb.checked);
-      } catch (e) {
-        showToast(String(e.message || e), 5200);
+  // 下拉框选中时也触发跳转（双击或Enter）
+  select.addEventListener("dblclick", async () => {
+    const nid = select.value;
+    if (!nid) return;
+    try {
+      await postDebugJumpNode(nid, cb.checked);
+      updateDevCurrentNode(currentBadge);
+    } catch (e) {
+      showErrorToast(e, 5200);
+    }
+  });
+
+  // 刷新按钮
+  refreshNodesBtn.addEventListener("click", () => {
+    loadDebugNodes(select, hint);
+    updateDevCurrentNode(currentBadge);
+  });
+
+  // 重置按钮
+  resetBtn.addEventListener("click", () => clearSaveAndReset());
+
+  document.body.appendChild(toggle);
+  document.body.appendChild(panel);
+
+  // 首次加载节点列表（后台预加载）
+  loadDebugNodes(select, hint);
+
+  // 定时更新当前节点显示
+  setInterval(() => {
+    if (devPanelVisible) {
+      updateDevCurrentNode(currentBadge);
+    }
+  }, 5000);
+}
+
+/** 从 /api/debug/story_graph 加载节点并填充 select */
+async function loadDebugNodes(select, hintEl) {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/debug/story_graph"));
+    if (!data.ok) {
+      hintEl.textContent = "⚠ 服务端未启用 GAME_DEBUG_API，跳转将返回 403。";
+      hintEl.className = "dev-panel__hint dev-panel__hint--warn";
+      return;
+    }
+    hintEl.textContent = `共 ${data.nodes.length} 个剧情节点，按幕分组。选中后点击「跳转」或双击选项。`;
+    hintEl.className = "dev-panel__hint";
+
+    // 按 act 分组
+    const actOrder = ["prologue", "act1", "act2", "act3", "finale"];
+    const actLabels = {
+      prologue: "序幕",
+      act1: "第一幕",
+      act2: "第二幕",
+      act3: "第三幕",
+      finale: "终章",
+    };
+    const groups = {};
+    for (const act of actOrder) {
+      groups[act] = [];
+    }
+    groups["_other"] = [];
+    for (const n of data.nodes) {
+      if (groups[n.act]) {
+        groups[n.act].push(n);
+      } else {
+        groups["_other"].push(n);
       }
-    });
-    presets.appendChild(b);
+    }
+
+    // 构造 select options
+    select.innerHTML = "";
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = "— 选择节点跳转 —";
+    noneOpt.disabled = true;
+    select.appendChild(noneOpt);
+
+    // 当前节点标记
+    const currentId = data.current_node_id;
+
+    for (const act of [...actOrder, "_other"]) {
+      const nodes = groups[act] || [];
+      if (nodes.length === 0) continue;
+      const grp = document.createElement("optgroup");
+      grp.label = actLabels[act] || act;
+      for (const n of nodes) {
+        const opt = document.createElement("option");
+        opt.value = n.node_id;
+        const marker = n.node_id === currentId ? "★ " : "";
+        opt.textContent = `${marker}${n.node_id}　${n.title_zh}`;
+        if (n.node_id === currentId) {
+          opt.style.fontWeight = "bold";
+          opt.style.color = "#7eb8da";
+        }
+        grp.appendChild(opt);
+      }
+      select.appendChild(grp);
+    }
+  } catch (e) {
+    hintEl.textContent = "⚠ 无法连接服务端加载节点列表。";
+    hintEl.className = "dev-panel__hint dev-panel__hint--warn";
   }
-  bar.appendChild(presets);
-  document.body.appendChild(bar);
+}
 
-  fetchJSON(gameApiUrl("/api/routes"))
-    .then((r) => {
-      if (!r.debug_api_enabled) {
-        note.textContent +=
-          " （当前服务端未启用 GAME_DEBUG_API，跳转将返回 403。）";
-      }
-    })
-    .catch(() => {});
+/** 更新当前节点徽章 */
+function updateDevCurrentNode(badgeEl) {
+  if (!latestState || !latestState.narrative) return;
+  const n = latestState.narrative;
+  badgeEl.textContent = `当前：${n.node_id}《${n.title_zh}》`;
+}
+
+/** 地址栏加 ?debug=1 时显示（向后兼容旧版，已废弃——请直接点击左下角 DEV 按钮） */
+function initDebugJumpBar() {
+  // 旧版 ?debug=1 不再渲染，统一使用 DEV 按钮
+  // 但保持函数存在以免报错
+}
+
+// 用新的 dev panel 替换旧的 debug jump bar 初始化
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => { initDevPanel(); });
+} else {
+  initDevPanel();
 }
 
 function showToast(msg, ms = 2800) {
   toast = msg;
   toastUntil = performance.now() + ms;
+}
+
+/** 用户友好的错误提示，不暴露技术细节 */
+function showErrorToast(e, ms = 4200) {
+  const msg = e?.message || String(e || "");
+  const friendly =
+    msg.includes("fetch") || msg.includes("Network") || msg.includes("Failed") ?
+      "网络连接异常，请检查服务是否正常运行。" :
+    msg.includes("403") ?
+      "操作未授权（当前服务未启用调试模式）。" :
+    msg.includes("404") ?
+      "请求的资源不存在，请刷新页面后重试。" :
+    msg.includes("500") ?
+      "服务器处理出错，请稍后重试。" :
+    msg.includes("JSON") ?
+      "数据解析异常，请刷新页面后重试。" :
+      "操作失败，请稍后重试。";
+  console.warn("[用户提示]", friendly, "→ 原始错误:", msg);
+  showToast(friendly, ms);
 }
 
 /** Canvas HUD：圆角矩形（需浏览器支持 path.roundRect） */
@@ -1687,6 +4358,15 @@ function openStoryUI() {
 
 function closeStoryUI() {
   cancelNpcDialogueReveal();
+  // 结束自由对话
+  if (chatActiveNpcId) {
+    fetchJSON(gameApiUrl("/api/npc/chat"), {
+      method: "POST",
+      body: JSON.stringify({ npc_id: chatActiveNpcId, action: "end" }),
+    }).catch(() => {});
+  }
+  teardownChatUI();
+  closeChatHistory();
   storyBackdrop.classList.add("hidden");
   storyBackdrop.setAttribute("aria-hidden", "true");
   storyBody.classList.remove("story-body--npc-dialogue");
@@ -1697,8 +4377,16 @@ function closeStoryUI() {
   storyTextbox.classList.remove("story-textbox--advancing");
   storyAiLine.classList.remove("story-ai-line--advance-hint");
   if (storyAdvanceHint) storyAdvanceHint.classList.add("hidden");
+  storyPortraitKind = "";
+  storyPortraitId = "";
+  storyPortraitLabel = "";
   storySpriteBlock.style.background = "#3d4f66";
   storySpriteLabel.textContent = "";
+  if (storyPortraitImgEl) {
+    storyPortraitImgEl.hidden = true;
+    storyPortraitImgEl.removeAttribute("src");
+  }
+  setStorySpriteColumnVisible(true);
   storyAiLine.textContent = "";
   setStoryChoicesLocked(false);
 }
@@ -1717,14 +4405,14 @@ async function postChoice(choiceId) {
     method: "POST",
     body: JSON.stringify({ choice_id: choiceId }),
   });
-  showToast(`已选择 · 当前节点 ${data.narrative.node_id}`);
+  showToast("已选择，剧情推进中…");
   closeStoryUI();
   await refreshTopBar();
 }
 
 async function postAdvance() {
   const data = await fetchJSON(gameApiUrl("/api/advance"), { method: "POST", body: "{}" });
-  showToast(`已推进 · 当前节点 ${data.narrative.node_id}`);
+  showToast("已推进至下一阶段。");
   closeStoryUI();
   await refreshTopBar();
 }
@@ -1741,7 +4429,7 @@ function renderDossierPanel(state) {
   const pre = document.createElement("p");
   pre.className = "objectives-note";
   pre.textContent =
-    "记忆碎片（占位）：展示 NPC 信任、由系统汇总的印象语，以及最近写入的长期记忆摘录；随对话与经营累积。";
+    "记忆碎片：展示 NPC 信任、由系统汇总的印象语，以及最近写入的长期记忆摘录；随对话与经营累积。";
   el.appendChild(pre);
   const rows = state?.overworld_npcs || [];
   let any = false;
@@ -1817,6 +4505,8 @@ function renderExploreLocks(state) {
       if (!j?.ok) return;
       const st = await fetchJSON(gameApiUrl("/api/state"));
       latestState = st;
+      // 时间推进后立即保存到 localStorage
+      persistSessionToLocalStorage();
       renderObjectivesPanel(st);
       renderMgmtResourcesHud(st.session);
       renderMgmtLogStrip(st.management_recent);
@@ -1825,7 +4515,7 @@ function renderExploreLocks(state) {
       syncNpcTargetsFromSchedule(npcScheduleSnapshot.pos);
       showToast(`时间推进 ${mins} 分钟`, 3200);
     } catch (e) {
-      showToast(String(e.message || e), 5200);
+      showErrorToast(e, 5200);
     }
   }
 
@@ -1864,7 +4554,7 @@ function renderExploreLocks(state) {
         syncNpcTargetsFromSchedule(npcScheduleSnapshot.pos);
         showToast("探照灯已到位：废弃矿场深层可进。", 4800);
       } catch (e) {
-        showToast(String(e.message || e), 6200);
+        showErrorToast(e, 6200);
       }
     });
     wrap.appendChild(b);
@@ -1887,13 +4577,19 @@ function renderMgmtResourcesHud(session) {
   if (morale < 40) moraleColor = "#f44336";
   else if (morale < 60) moraleColor = "#ff9800";
   el.className = "resource-strip";
+  const chip = (resKey, label, val) => {
+    const ik = RESOURCE_STRIP_ICON_KEY[resKey];
+    const icon = ik ? explorerIconImgHtml(ik, "resource-strip__icon", 18) : "";
+    return `<div class="resource-strip__chip" role="listitem">${icon}<span class="resource-strip__k">${label}</span><span class="resource-strip__v">${val}</span></div>`;
+  };
   el.innerHTML = `
     <span class="resource-strip__title">基地资源</span>
     <div class="resource-strip__chips" role="list">
-      <div class="resource-strip__chip" role="listitem"><span class="resource-strip__k">能源</span><span class="resource-strip__v">${r.energy}</span></div>
-      <div class="resource-strip__chip" role="listitem"><span class="resource-strip__k">补给</span><span class="resource-strip__v">${r.food}</span></div>
-      <div class="resource-strip__chip" role="listitem"><span class="resource-strip__k">医疗</span><span class="resource-strip__v">${r.medical}</span></div>
-      <div class="resource-strip__chip" role="listitem"><span class="resource-strip__k">情报</span><span class="resource-strip__v">${r.intel}</span></div>
+      ${chip("energy", "能源", r.energy)}
+      ${chip("food", "补给", r.food)}
+      ${chip("medical", "医疗", r.medical)}
+      ${chip("intel", "情报", r.intel)}
+      ${chip("parts", "零件", r.parts ?? 0)}
     </div>
     <div class="resource-strip__morale" title="基地士气">
       <span class="resource-strip__k">士气</span>
@@ -1912,8 +4608,9 @@ function renderSandboxDock(state) {
   const phase = String(phaseRaw).trim();
   const sandboxOpsUnlocked = sb.sandbox_ops_unlocked === true;
 
+  // 静默玩法教程入口已移除（内容已整合到基地核心）
   const dockTopTools = document.querySelector(".objectives-panel__top-tools");
-  if (dockTopTools) dockTopTools.classList.toggle("hidden", !sandboxOpsUnlocked);
+  if (dockTopTools) dockTopTools.classList.add("hidden");
 
   sandboxDock.classList.remove("hidden");
   sandboxDock.classList.remove("sandbox-dock--operating", "sandbox-dock--beat");
@@ -1921,55 +4618,23 @@ function renderSandboxDock(state) {
   sandboxDock.classList.toggle("sandbox-dock--beat", phase !== "Sandbox");
   sandboxDock.replaceChildren();
 
+  // 状态行：相位徽标 + 基础日
   const row = document.createElement("div");
   row.className = "sandbox-dock__title-row";
-  row.title = "静默期内每推进一日，AI 交流配额会重置。";
+  const wd = Number(sess.world_day ?? sb.world_day ?? 1);
+  const autoResume = (phase === "Sandbox") && Boolean(sb.sandbox_auto_resume);
   const badge = document.createElement("span");
   badge.className = `sandbox-dock__badge ${phase === "Sandbox" ? "sandbox-dock__badge--sandbox" : "sandbox-dock__badge--beat"}`;
-  badge.textContent = phase === "Sandbox" ? "静默运营" : "剧情节拍";
+  badge.textContent = phase === "Sandbox" ? (autoResume ? "休整期" : "静默运营") : "剧情节拍";
   row.appendChild(badge);
 
   const meta = document.createElement("span");
   meta.className = "sandbox-dock__meta";
-  const wd = Number(sess.world_day ?? sb.world_day ?? 1);
-  const api = sb.sandbox_npc_quota || {};
-  const clockDisp = state?.world_clock?.display_zh || "";
-  meta.textContent = clockDisp
-    ? `第 ${wd} 日 · ${clockDisp} · AI ${api.used_today ?? 0}/${api.cap ?? 5}`
-    : `第 ${wd} 日 · AI ${api.used_today ?? 0}/${api.cap ?? 5}`;
+  meta.textContent = `第 ${wd} 日`;
   row.appendChild(meta);
   sandboxDock.appendChild(row);
 
-  const tagline = document.createElement("div");
-  tagline.className = "sandbox-dock__tagline";
-  if (phase === "Sandbox") {
-    tagline.textContent = "基地日、地图资源行动、远征共用同一时钟。";
-    tagline.title =
-      "科技立项摘要在下方摘要；具体决算选项需走近设施面板。基地日 +1 会先结算归国远征，再写入简报。";
-  } else if (sandboxOpsUnlocked) {
-    tagline.textContent = "可在此进入静默，用基地日驱动资源与远征结算。";
-    tagline.title =
-      "进入静默后左侧为「时钟 + 决算 + 远征」经营循环；需要时也可结束静默回到剧情节拍。";
-  } else {
-    tagline.textContent = "静默运营将随主线推进首次解锁。";
-    tagline.title = "剧情在特定节点会自动切入静默；解锁后本节可再次手动进入。";
-  }
-  sandboxDock.appendChild(tagline);
-
-  if (phase === "Sandbox") {
-    const detail = document.createElement("div");
-    detail.className = "sandbox-dock__meta sandbox-dock__detail-line";
-    const rem = sb.sandbox_min_remaining_days;
-    const pend = (sb.management_pending_queue_tags || []).length;
-    const gen = sb.sandbox_generation ?? sess.sandbox_generation;
-    const exN = (sb.expeditions_active || []).length;
-    const remBit = rem != null ? `${rem}d` : "—";
-    detail.textContent = `#${gen} · 最短 ${remBit} · 决算 ${pend} · 远征 ${exN}`;
-    detail.title =
-      rem != null ? `第 ${gen} 轮静默 · 距可结束静默至少还需 ${rem} 个基地日 · 决算待命 ${pend} · 在外的远征 ${exN} 队` : `第 ${gen} 轮静默 · 未设置最短日数 · 决算待命 ${pend} · 在外的远征 ${exN} 队`;
-    sandboxDock.appendChild(detail);
-  }
-
+  // 切换按钮
   const actions = document.createElement("div");
   actions.className = "sandbox-dock__actions";
 
@@ -1986,76 +4651,59 @@ function renderSandboxDock(state) {
       syncNpcTargetsFromSchedule(npcScheduleSnapshot.pos);
       return { fnRet, st };
     } catch (e) {
-      showToast(String(e.message || e), 5200);
+      showErrorToast(e, 5200);
       return undefined;
     }
+  }
+
+  // Sandbox 中始终显示「基地日 +1」
+  if (phase === "Sandbox") {
+    // 剩余天数提示（自动休整期显示）
+    const rem = sb.sandbox_min_remaining_days;
+    if (autoResume && rem !== undefined && rem !== null) {
+      const remEl = document.createElement("div");
+      remEl.className = "sandbox-dock__remain";
+      remEl.textContent = rem > 0 ? `仍需运营 ${rem} 个基地日方可推进主线。` : "休整期已满，再推进一日将自动回归主线。";
+      actions.appendChild(remEl);
+    }
+    // 基地日 +1 按钮
+    const bDay = document.createElement("button");
+    bDay.type = "button";
+    bDay.className = "sandbox-dock__btn sandbox-dock__btn--primary sandbox-dock__btn--fat";
+    bDay.textContent = "基地日 +1";
+    bDay.title = "推进一个世界日：结算远征归国与资源生产。";
+    bDay.addEventListener("click", () => postAdvanceWorldDay());
+    actions.appendChild(bDay);
   }
 
   if (phase !== "Sandbox") {
     if (!sandboxOpsUnlocked) {
       const lock = document.createElement("div");
-      lock.className = "sandbox-dock__meta sandbox-dock__locked-hint";
+      lock.className = "sandbox-dock__locked-hint";
       lock.textContent = "静默尚未解锁，请推进主线。";
-      lock.title =
-        "首次由剧情节点自动切入静默后即永久解锁本节；之后可在侧边栏查看教程并多次手动进入静默。";
       actions.appendChild(lock);
     } else {
-      const labMin = document.createElement("label");
-      labMin.className = "sandbox-dock__meta";
-      labMin.textContent = "最短静默基数日";
-      const inp = document.createElement("input");
-      inp.type = "number";
-      inp.min = "0";
-      inp.step = "1";
-      inp.className = "sandbox-dock__input-min";
-      inp.value = "1";
-      labMin.appendChild(inp);
-      actions.appendChild(labMin);
-
       const bEnter = document.createElement("button");
       bEnter.type = "button";
       bEnter.className = "sandbox-dock__btn sandbox-dock__btn--primary sandbox-dock__btn--fat";
-      bEnter.textContent = "进入静默（经营循环）";
+      bEnter.textContent = "进入静默";
+      bEnter.title = "完成每个章节/幕后会自动进入休整期；也可随时手动进入。";
       bEnter.addEventListener("click", () =>
         syncAfterSim(async () => {
-          const raw = parseInt(inp.value, 10);
-          const payload = {};
-          if (Number.isFinite(raw)) payload.min_world_days = Math.max(0, raw);
           await fetchJSON(gameApiUrl("/api/sim/enter_sandbox"), {
             method: "POST",
-            body: JSON.stringify(payload),
+            body: JSON.stringify({}),
           });
-          showToast("已进入静默——「基地日」现为节奏核心；可查远征与简报。", 5200);
+          showToast("已进入静默运营 · 经营操作请前往基地核心。", 4200);
         }),
       );
       actions.appendChild(bEnter);
     }
-  } else {
-    const bDay = document.createElement("button");
-    bDay.type = "button";
-    bDay.className = "sandbox-dock__btn sandbox-dock__btn--primary sandbox-dock__btn--fat";
-    bDay.textContent = "基地日推进 +1";
-    bDay.title =
-      "本按钮为静默主轴：先结算归国远征，再结转物资/岸线/矿区并写入简报，同时重置 NPC 交流配额。";
-    bDay.addEventListener("click", async () => {
-      const out = await syncAfterSim(async () =>
-        fetchJSON(gameApiUrl("/api/sim/advance_world_day"), { method: "POST", body: "{}" }),
-      );
-      if (!out?.fnRet) return;
-      const tick = out.fnRet;
-      const parts = [];
-      if (tick.world_day_after != null) parts.push(`第 ${tick.world_day_after} 日已结转`);
-      if (Array.isArray(tick.expeditions_settled) && tick.expeditions_settled.length)
-        parts.push(`远征归国 ${tick.expeditions_settled.length} 队`);
-      const eco = tick.economy_tick || {};
-      if (eco.bulletin_line_zh) parts.push(String(eco.bulletin_line_zh).slice(0, 120));
-      showToast(parts.length ? parts.join(" · ") : "已过一日。", 6800);
-    });
-    actions.appendChild(bDay);
-
+  } else if (!autoResume) {
+    // 仅手动静默期显示退出按钮；自动休整期不显示，沉浸式自然过渡
     const bExit = document.createElement("button");
     bExit.type = "button";
-    bExit.className = "sandbox-dock__btn";
+    bExit.className = "sandbox-dock__btn sandbox-dock__btn--fat";
     bExit.textContent = "结束静默";
     bExit.addEventListener("click", () =>
       syncAfterSim(async () => {
@@ -2063,425 +4711,12 @@ function renderSandboxDock(state) {
           method: "POST",
           body: JSON.stringify({ force: false }),
         });
-        showToast("已恢复剧情节拍；待办决算已尝试落地。", 4200);
+        showToast("已恢复剧情节拍。", 4200);
       }),
     );
     actions.appendChild(bExit);
-
-    const bForce = document.createElement("button");
-    bForce.type = "button";
-    bForce.className = "sandbox-dock__btn sandbox-dock__btn--danger";
-    bForce.textContent = "强制结束";
-    bForce.title = "忽略最短静默日数，但仍需决算队列可落地";
-    bForce.addEventListener("click", () =>
-      syncAfterSim(async () => {
-        await fetchJSON(gameApiUrl("/api/sim/exit_sandbox"), {
-          method: "POST",
-          body: JSON.stringify({ force: true }),
-        });
-        showToast("已强制结束静默。", 3600);
-      }),
-    );
-    actions.appendChild(bForce);
   }
   sandboxDock.appendChild(actions);
-
-  if (phase === "Sandbox") {
-    const cr = document.createElement("div");
-    cr.className = "sandbox-dock__clock-actions";
-    const lab = document.createElement("span");
-    lab.className = "sandbox-dock__meta";
-    lab.textContent = `调时：${state?.world_clock?.display_zh || "—"}（洞穴 21:00–5:00）`;
-    cr.appendChild(lab);
-    async function bumpSim(mins) {
-      await syncAfterSim(async () => postAdvanceClockMinutes(mins));
-    }
-    const mk = (t, m) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "sandbox-dock__btn";
-      b.textContent = t;
-      b.addEventListener("click", () => bumpSim(m));
-      cr.appendChild(b);
-    };
-    mk("+30分", 30);
-    mk("+2时", 120);
-    mk("+6时", 360);
-    sandboxDock.appendChild(cr);
-  }
-
-  if (phase === "Sandbox") {
-    const expBox = document.createElement("div");
-    expBox.className = "sandbox-dock__exp";
-    const expHead = document.createElement("div");
-    expHead.className = "sandbox-dock__exp-head";
-    const expTitle = document.createElement("div");
-    expTitle.className = "sandbox-dock__exp-title";
-    expTitle.textContent = "野外远征";
-    const expSub = document.createElement("div");
-    expSub.className = "sandbox-dock__exp-sub";
-    expSub.textContent = "静默专有 · 出发前扣资源 · 归国跟基地日结算";
-    expSub.title = "仅静默期可用；出发前扣除能源与补给；归国日随「基地日 +1」一并入账。";
-    expHead.appendChild(expTitle);
-    expHead.appendChild(expSub);
-    expBox.appendChild(expHead);
-
-    const active = sb.expeditions_active || [];
-    const busyLeaders = new Set(active.map((e) => e.leader_npc_id).filter(Boolean));
-    if (active.length) {
-      const wrap = document.createElement("div");
-      wrap.className = "sandbox-dock__exp-cards";
-      for (const ex of active) {
-        const card = document.createElement("div");
-        card.className = "sandbox-dock__exp-card";
-        const head = document.createElement("div");
-        head.className = "sandbox-dock__exp-card-head";
-        const leaderLab = ex.leader_label_zh || ex.leader_npc_id || "?";
-        const destLab = ex.destination_label_zh || ex.destination_id || "";
-        head.textContent = `${leaderLab} · ${destLab}`;
-        const sub = document.createElement("div");
-        sub.className = "sandbox-dock__exp-card-sub";
-        const pct = Math.min(100, Math.round(Number(ex.progress ?? 0) * 100));
-        const du = ex.days_until_return ?? 0;
-        sub.textContent =
-          du > 0
-            ? `航程进度约 ${pct}% · 尚需 ${du} 个基地日 · 定于第 ${ex.return_world_day ?? "?"} 日归国`
-            : `已定在第 ${ex.return_world_day ?? "?"} 日归国 · 请点击「基地日 +1」以触发结算`;
-        const bar = document.createElement("div");
-        bar.className = "sandbox-dock__exp-bar";
-        const fill = document.createElement("span");
-        fill.className = "sandbox-dock__exp-bar-fill";
-        fill.style.width = `${pct}%`;
-        bar.appendChild(fill);
-        card.appendChild(head);
-        card.appendChild(sub);
-        card.appendChild(bar);
-        wrap.appendChild(card);
-      }
-      expBox.appendChild(wrap);
-    }
-
-    const rowE = document.createElement("div");
-    rowE.className = "sandbox-dock__exp-row";
-    const selL = document.createElement("select");
-    selL.className = "sandbox-dock__select";
-    selL.title = "每位干员同时仅可带领一支在外的远征";
-    for (const [id, zh] of [
-      ["chubby", "小胖"],
-      ["karen", "卡伦"],
-      ["jin", "堇"],
-    ]) {
-      const o = document.createElement("option");
-      o.value = id;
-      const outBusy = busyLeaders.has(id);
-      o.disabled = outBusy;
-      o.textContent = outBusy ? `${zh}（远征中）` : zh;
-      selL.appendChild(o);
-    }
-
-    const selD = document.createElement("select");
-    selD.className = "sandbox-dock__select";
-    const cat = sb.expedition_catalog || [];
-    let firstUnlocked = "";
-    for (const d of cat) {
-      const o = document.createElement("option");
-      o.value = d.dest_id || "";
-      const c = d.cost || {};
-      const ce = Number(c.energy ?? 0);
-      const cf = Number(c.food ?? 0);
-      const lockTag = d.unlocked ? "" : "（门禁未开）";
-      o.textContent = `${d.duration_days ?? "?"}日 · 能耗${ce}粮${cf} · ${d.label_zh || d.dest_id}${lockTag}`;
-      o.title = [d.reward_hint_zh || "", d.blocked_reason_zh || ""].filter(Boolean).join("\n") || "";
-      o.disabled = !d.unlocked;
-      selD.appendChild(o);
-      if (d.unlocked && !firstUnlocked) firstUnlocked = d.dest_id;
-    }
-    if (firstUnlocked) selD.value = firstUnlocked;
-
-    const hintDest = document.createElement("div");
-    hintDest.className = "sandbox-dock__exp-hint";
-
-    for (const o of [...selL.options]) {
-      if (!o.disabled) {
-        selL.value = o.value;
-        break;
-      }
-    }
-
-    const bExp = document.createElement("button");
-    bExp.type = "button";
-    bExp.className = "sandbox-dock__btn sandbox-dock__btn--emph";
-    bExp.textContent = "签发远征";
-
-    const expWarn = document.createElement("div");
-    expWarn.className = "sandbox-dock__exp-warn";
-
-    function expeditionPreflightMsg() {
-      if (!cat.length) {
-        return { ok: false, zh: "未收到远征目录：请刷新页面；若仍存在，重启本仓库的 python -m game。" };
-      }
-      if (!firstUnlocked) {
-        return {
-          ok: false,
-          zh: "暂无门禁已满足的远征目的地；请先在「探索」与剧情中解锁岸线洞穴、矿脉深区、回声信标塔或议会前哨等区域。",
-        };
-      }
-      if ([...selL.options].every((o) => o.disabled)) {
-        return {
-          ok: false,
-          zh: "三名队长均已在外执行任务，请先推进基地日直至至少一队归国后再派新远征。",
-        };
-      }
-      const lid = selL.value || "";
-      if (busyLeaders.has(lid)) {
-        const name =
-          ({ chubby: "小胖", karen: "卡伦", jin: "堇" })[lid] ||
-          selL.selectedOptions[0]?.textContent?.replace(/（远征中）$/, "").trim() ||
-          lid;
-        return { ok: false, zh: `${name}正在远征途中，请换队长或等国后再派出第二支小队。` };
-      }
-      const destId = selD.value || "";
-      const row = cat.find((x) => String(x.dest_id) === String(destId));
-      const opt = selD.selectedOptions[0];
-      if (!row || opt?.disabled) {
-        return { ok: false, zh: "当前选中的目的地尚未门禁开放；请下拉选择门禁已满足的远征目标。" };
-      }
-      const ce = Number(row.cost?.energy ?? 0);
-      const cf = Number(row.cost?.food ?? 0);
-      const resSnap = sess.resources || {};
-      const e = Number(resSnap.energy ?? 0);
-      const f = Number(resSnap.food ?? 0);
-      if (e < ce || f < cf) {
-        return {
-          ok: false,
-          zh: `物资不足以签发本条远征：需 能耗≥${ce}、补给≥${cf}（当前 能源 ${e}、补给 ${f}）；可多几次「基地日 +1」或在「决算」侧补资源后再试。`,
-        };
-      }
-      return { ok: true, zh: "" };
-    }
-
-    function refreshExpIssue() {
-      const pf = expeditionPreflightMsg();
-      expWarn.textContent = pf.zh || "";
-      expWarn.hidden = pf.ok || !pf.zh;
-      bExp.disabled = !pf.ok;
-    }
-
-    function refreshDestHint() {
-      const pick = cat.find((x) => String(x.dest_id) === String(selD.value));
-      if (!pick) {
-        hintDest.textContent = "";
-      } else {
-        hintDest.textContent = [pick.reward_hint_zh || "", pick.blocked_reason_zh || ""].filter(Boolean).join(" ").trim();
-      }
-      refreshExpIssue();
-    }
-
-    selD.addEventListener("change", refreshDestHint);
-    selL.addEventListener("change", refreshExpIssue);
-
-    bExp.addEventListener("click", async () => {
-      const pf = expeditionPreflightMsg();
-      if (!pf.ok && pf.zh) {
-        showToast(pf.zh, 6500);
-        return;
-      }
-      const out = await syncAfterSim(async () =>
-        fetchJSON(gameApiUrl("/api/expedition/start"), {
-          method: "POST",
-          body: JSON.stringify({ leader_npc_id: selL.value, destination_id: selD.value }),
-        }),
-      );
-      if (!out?.fnRet?.ok) return;
-      const ex = out.fnRet.expedition || {};
-      const rw = ex.return_world_day;
-      showToast(
-        Number.isFinite(Number(rw))
-          ? `远征队已编成：出发前物资已记账，预计第 ${rw} 个基地日归国（请用「基地日 +1」推进）。`
-          : "远征队已出发。归国结算与基地日绑定。",
-        4200,
-      );
-    });
-
-    refreshDestHint();
-
-    rowE.appendChild(selL);
-    rowE.appendChild(selD);
-    rowE.appendChild(bExp);
-    expBox.appendChild(rowE);
-    expBox.appendChild(expWarn);
-    expBox.appendChild(hintDest);
-    sandboxDock.appendChild(expBox);
-
-    const techHints = sb.facility_tech_hints || [];
-    if (techHints.length) {
-      const techBox = document.createElement("div");
-      techBox.className = "sandbox-dock__tech-hint";
-      const thTitle = document.createElement("div");
-      thTitle.className = "sandbox-dock__tech-hint-title";
-      thTitle.textContent = "设施科技 · 静默摘要";
-      techBox.appendChild(thTitle);
-      const ul = document.createElement("div");
-      ul.className = "sandbox-dock__tech-hint-list";
-      for (const row of techHints) {
-        const line = document.createElement("div");
-        line.className = "sandbox-dock__tech-hint-row";
-        const pend = Number(row.pending_research_count ?? 0);
-        const tot = Number(row.nodes_total ?? 0);
-        const rs = Number(row.nodes_researched ?? 0);
-        line.textContent = `${row.facility_label_zh || row.facility_id} · 已定案节点 ${rs}/${tot} · 当前可先立项 ${pend}`;
-        ul.appendChild(line);
-      }
-      techBox.appendChild(ul);
-      const foot = document.createElement("div");
-      foot.className = "sandbox-dock__tech-hint-foot";
-      foot.textContent = "立项走近设施决算卡；排队项结束静默后落地。";
-      foot.title =
-        "正式立项仍以走近对应设施时出现之「决算卡片」为准；静默内标记为「排队」的决议会在结束后落地。";
-      techBox.appendChild(foot);
-      sandboxDock.appendChild(techBox);
-    }
-
-    const actCat = sb.resource_activity_catalog || [];
-    if (actCat.length) {
-      const actBox = document.createElement("div");
-      actBox.className = "sandbox-dock__res-act";
-      const ah = document.createElement("div");
-      ah.className = "sandbox-dock__res-act-head";
-      const at = document.createElement("span");
-      at.className = "sandbox-dock__res-act-title";
-      at.textContent = "地图资源行动";
-      const asub = document.createElement("span");
-      asub.className = "sandbox-dock__res-act-sub";
-      asub.textContent = "静默内补充四项资源，与远征、基地日同一时钟。";
-      asub.title = "与区域门禁、远征、基地日结转共用同一时间轴；受冷却与资源约束。";
-      ah.appendChild(at);
-      ah.appendChild(asub);
-      actBox.appendChild(ah);
-
-      const selAct = document.createElement("select");
-      selAct.className = "sandbox-dock__select";
-      let firstRunnable = "";
-      for (const a of actCat) {
-        const o = document.createElement("option");
-        o.value = a.activity_id || "";
-        const rp = a.reward_preview || {};
-        const gainBits = [];
-        if (rp.energy) gainBits.push(`能+${rp.energy}`);
-        if (rp.food) gainBits.push(`粮+${rp.food}`);
-        if (rp.medical) gainBits.push(`医+${rp.medical}`);
-        if (rp.intel) gainBits.push(`情+${rp.intel}`);
-        const gainStr = gainBits.join(" ") || "见简报";
-        const cp = a.cost_preview || {};
-        let tag = "";
-        if (!a.zone_unlocked) tag = " · 区域未放行";
-        else if (Number(a.cooldown_remain_days || 0) > 0) tag = ` · 冷却≈${a.cooldown_remain_days}日`;
-        else if (!a.can_run_now) tag = " · 条件不足";
-
-        o.textContent = `${a.run_kind_zh || a.activity_id}（${a.primary_resource} · ${gainStr}）${tag}`;
-        o.title =
-          `片区 ${a.region_id}\n` +
-          `${!a.zone_unlocked ? `门禁：${a.blocked_gate_zh || ""}\n` : ""}` +
-          `岸线备注：${a.incursion_notes || "—"}\n` +
-          `行前能耗 ${cp.energy ?? 0} · 行前粮 ${cp.food ?? 0}\n失败率约 ${Math.round(Number(a.risk_failure ?? 0) * 100)}%`;
-        selAct.appendChild(o);
-        if (a.can_run_now && !firstRunnable) firstRunnable = a.activity_id;
-      }
-      if (firstRunnable) selAct.value = firstRunnable;
-
-      const hintAct = document.createElement("div");
-      hintAct.className = "sandbox-dock__res-act-hint";
-
-      function pickedActivity() {
-        return actCat.find((x) => String(x.activity_id) === String(selAct.value));
-      }
-
-      function actPreflightMsg() {
-        const p = pickedActivity();
-        if (!p) return { ok: false, zh: "请先选择一项地图行动。" };
-        if (!p.can_run_now)
-          return { ok: false, zh: p.blocked_reason_zh || p.blocked_gate_zh || "当前无法执行该行功。" };
-        return { ok: true, zh: "" };
-      }
-
-      function refreshActHint() {
-        const pf = actPreflightMsg();
-        const p = pickedActivity();
-        bRunAct.disabled = !pf.ok;
-        if (pf.ok && p) {
-          hintAct.textContent = p.incursion_notes ? `岸线提示：${p.incursion_notes}` : "";
-        } else if (pf.zh) {
-          hintAct.textContent = pf.zh;
-        } else {
-          hintAct.textContent = "";
-        }
-      }
-
-      const rowAct = document.createElement("div");
-      rowAct.className = "sandbox-dock__res-act-row";
-      const bRunAct = document.createElement("button");
-      bRunAct.type = "button";
-      bRunAct.className = "sandbox-dock__btn sandbox-dock__btn--primary";
-      bRunAct.textContent = "执行行动";
-      bRunAct.title = "结算一次该区域操作；成功可得资源，亦有失败机率";
-      selAct.addEventListener("change", refreshActHint);
-      refreshActHint();
-
-      bRunAct.addEventListener("click", async () => {
-        const pf = actPreflightMsg();
-        if (!pf.ok) {
-          showToast(pf.zh, 6200);
-          return;
-        }
-        const aid = selAct.value;
-        if (!aid) return;
-        try {
-          const out = await syncAfterSim(async () =>
-            fetchJSON(gameApiUrl("/api/sim/activity/run"), {
-              method: "POST",
-              body: JSON.stringify({ activity_id: aid }),
-            }),
-          );
-          const j = out?.fnRet;
-          if (!j?.ok) return;
-          showToast(
-            j.activity_success
-              ? "行动顺利：资源已记入仓库与简报。"
-              : "行动受挫：行前成本已消耗，详见简报。",
-            4800,
-          );
-        } catch (_) {
-          /* toast from fetchJSON */
-        }
-      });
-
-      rowAct.appendChild(selAct);
-      rowAct.appendChild(bRunAct);
-      actBox.appendChild(rowAct);
-      actBox.appendChild(hintAct);
-      sandboxDock.appendChild(actBox);
-    }
-  } else {
-    const hint = document.createElement("div");
-    hint.className = "sandbox-dock__meta sandbox-dock__beat-hint";
-    hint.style.marginTop = "4px";
-    hint.innerHTML =
-      "进入静默后，侧栏可<strong>签发远征</strong>并进行<strong>地图资源行动</strong>；设施决算仍须走近建筑并在剧情框内确认。";
-    sandboxDock.appendChild(hint);
-  }
-
-  const bulls = [...(sb.bulletin_tail_zh || []).slice(-4)];
-  if (bulls.length) {
-    const box = document.createElement("div");
-    box.className = `sandbox-dock__bull ${phase === "Sandbox" ? "sandbox-dock__bull--wide" : ""}`;
-    for (const line of bulls) {
-      const p = document.createElement("div");
-      p.className = "sandbox-dock__bull-row";
-      p.textContent = line;
-      box.appendChild(p);
-    }
-    sandboxDock.appendChild(box);
-  }
 }
 
 function renderMgmtLogStrip(recent) {
@@ -2533,6 +4768,25 @@ function renderObjectivesPanel(state) {
   }
   objectivesCurrent.appendChild(ul);
 
+  // 若当前节点需要走访设施确认选择，在目标列表下方给出指引
+  const hints = nar.facility_hints || {};
+  const choiceFacilities = [];
+  for (const [fid, h] of Object.entries(hints)) {
+    if (h?.upgrade_choice_id && fid !== "command") {
+      const fac = FACILITIES.find((f) => f.id === fid);
+      if (fac) choiceFacilities.push(fac.name);
+    }
+  }
+  if (choiceFacilities.length > 0) {
+    const cmdName = (FACILITIES.find((f) => f.id === "command") || {}).name || "指挥中心";
+    const guide = document.createElement("p");
+    guide.className = "objectives-note";
+    guide.style.cssText = "color:#c8e0f0;margin-top:6px;";
+    const list = choiceFacilities.join("」、「");
+    guide.textContent = `👉 前往「${list}」确认优先升级此项，也可在「${cmdName}」阅览全部选项。`;
+    objectivesCurrent.appendChild(guide);
+  }
+
   const blurb = nar.objectives_upcoming_blurb_zh;
   if (blurb) {
     const bp = document.createElement("p");
@@ -2548,6 +4802,8 @@ function renderObjectivesPanel(state) {
     note.textContent = "做出最终选择以进入对应结局。";
   } else if (nar.node_id === "FIN-03") {
     note.textContent = "结局演出节点。";
+  } else if (choiceFacilities.length > 0) {
+    note.textContent = "前往大地图上高亮的设施确认优先方向，或在指挥中心做出决策。";
   } else if ((nar.choices && nar.choices.length > 0) || (nar.fin_endings && nar.fin_endings.length > 0)) {
     note.textContent = "不同选项会通往不同剧情；做出选择后继续。";
   } else {
@@ -2644,7 +4900,7 @@ function tryShowMemoryFlash022(state) {
       showToast("意识回落基地当下。", 2600);
       await refreshTopBar();
     } catch (e) {
-      showToast(String(e.message || e), 6200);
+      showErrorToast(e, 6200);
     } finally {
       finishing = false;
       btn.disabled = false;
@@ -2868,17 +5124,82 @@ function maybeOfferSandboxPlaybookIntro(data) {
   openSandboxPlaybook();
 }
 
-async function refreshTopBar() {
+/** localStorage 存档键名 */
+const LS_SAVE_KEY = "epoch_incursion_save_v1";
+
+/** 将当前后端会话持久化到 localStorage */
+function persistSessionToLocalStorage() {
+  if (!latestState?.session) return;
   try {
-    const data = await fetchJSON(gameApiUrl("/api/state"));
+    localStorage.setItem(LS_SAVE_KEY, JSON.stringify(latestState.session));
+  } catch (e) {
+    // localStorage 满或不可用，静默失败
+  }
+}
+
+/** 清除存档：重置后端会话 + 清除 localStorage */
+async function clearSaveAndReset() {
+  try {
+    // 先清除 localStorage
+    localStorage.removeItem(LS_SAVE_KEY);
+    // 重置后端会话
+    const data = await fetchJSON(gameApiUrl("/api/session/reset"), {
+      method: "POST",
+      body: "{}",
+    });
     latestState = data;
-    syncExplorerApiBanner(true);
+    // 重置恢复标记，以便下次可以重新尝试恢复（但 localStorage 已清空，不会恢复任何内容）
+    _lsRestoreAttempted = true;
     renderObjectivesPanel(data);
     renderMgmtResourcesHud(data.session);
     renderMgmtLogStrip(data.management_recent);
     renderSandboxDock(data);
-    tryShowMemoryFlash022(data);
-    maybeOfferSandboxPlaybookIntro(data);
+    showToast("存档已清除，游戏已重置。", 3200);
+  } catch (e) {
+    showToast("清除存档失败，请重试。", 4200);
+  }
+}
+
+/** 从 localStorage 恢复存档到后端（仅在首次成功拉取 state 后调用一次） */
+let _lsRestoreAttempted = false;
+async function restoreSessionFromLocalStorage() {
+  if (_lsRestoreAttempted) return null;
+  _lsRestoreAttempted = true;
+  try {
+    const raw = localStorage.getItem(LS_SAVE_KEY);
+    if (!raw) return null;
+    const session = JSON.parse(raw);
+    if (!session || typeof session !== "object") return null;
+    const resp = await fetchJSON(gameApiUrl("/api/session/load"), {
+      method: "POST",
+      body: JSON.stringify({ session }),
+    });
+    return resp;
+  } catch (e) {
+    // 恢复失败，继续使用新会话
+    return null;
+  }
+}
+
+async function refreshTopBar() {
+  try {
+    const data = await fetchJSON(gameApiUrl("/api/state"));
+    latestState = data;
+    // 首次成功获取 state 后，尝试从 localStorage 恢复存档
+    const restored = await restoreSessionFromLocalStorage();
+    // 如果恢复了存档，使用恢复后的 state；否则用刚拉取的 state
+    if (restored?.session) {
+      latestState = restored;
+    }
+    // 每次 state 更新后自动持久化到 localStorage
+    persistSessionToLocalStorage();
+    syncExplorerApiBanner(true);
+    renderObjectivesPanel(latestState);
+    renderMgmtResourcesHud(latestState.session);
+    renderMgmtLogStrip(latestState.management_recent);
+    renderSandboxDock(latestState);
+    tryShowMemoryFlash022(latestState);
+    maybeOfferSandboxPlaybookIntro(latestState);
   } catch (e) {
     latestState = null;
     explorerSyncLastError = e?.message || String(e);
@@ -2899,13 +5220,22 @@ function addChoiceButtons(narrative) {
 
   if (narrative.node_id === "FIN-02" && narrative.fin_endings?.length) {
     for (const e of narrative.fin_endings) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "ending-choice-wrapper";
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = e.label_zh;
       b.disabled = navBlocked;
       if (navBlocked) b.title = narrative.story_navigation_blocked_zh || "";
       b.addEventListener("click", () => postChoice(e.id));
-      storyChoices.appendChild(b);
+      wrapper.appendChild(b);
+      if (e.description_zh) {
+        const desc = document.createElement("p");
+        desc.className = "ending-choice-desc";
+        desc.textContent = e.description_zh;
+        wrapper.appendChild(desc);
+      }
+      storyChoices.appendChild(wrapper);
     }
     return;
   }
@@ -2958,6 +5288,10 @@ async function postNpcOpening(npcId, storyFocus) {
     });
     latestState = data;
     const nar = data.narrative;
+    // 记录 NPC 开场白到对话历史（仅自由对话模式）
+    if (chatInputContainer && data.text) {
+      chatHistoryMessages.push({ role: "npc", text: data.text, time: Date.now() });
+    }
     const decryptAfterTalk =
       nar?.node_id === "02-01" &&
       npcId === "dr_lin" &&
@@ -2967,6 +5301,27 @@ async function postNpcOpening(npcId, storyFocus) {
 
     revealNpcDialogueSequential(storyAiLine, data.text || "", {
       onComplete: async () => {
+        // 自由对话模式：显示输入框，并发送 start 到后端
+        if (chatInputContainer) {
+          chatInputContainer.style.display = "";
+          setTimeout(() => chatInputField?.focus(), 150);
+          // 告知后端对话开始
+          try {
+            const startResp = await fetchJSON(gameApiUrl("/api/npc/chat"), {
+              method: "POST",
+              body: JSON.stringify({ npc_id: npcId, player_text: "", action: "start" }),
+            });
+            // 如果后端返回对话被阻止（NPC 已结束对话），显示拒绝消息
+            if (startResp.conversation_blocked) {
+              teardownChatUI();
+              storyAiLine.textContent = `"${startResp.reason_zh || '该去工作了'}"`;
+              setTimeout(() => closeStoryUI(), 2500);
+            }
+          } catch (_) { /* 静默忽略 */ }
+          updateChatEmotion({ off_topic_count: 0 });
+          return;
+        }
+
         if (!decryptAfterTalk) {
           setStoryChoicesLocked(false);
           return;
@@ -2993,7 +5348,7 @@ async function postNpcOpening(npcId, storyFocus) {
           }
           await refreshTopBar();
         } catch (e) {
-          showToast(String(e.message || e), 5200);
+          showErrorToast(e, 5200);
         } finally {
           setStoryChoicesLocked(false);
         }
@@ -3015,6 +5370,11 @@ async function postSourceLine(question) {
       method: "POST",
       body: JSON.stringify({ question: question || "……" }),
     });
+    // 保存源低语后的状态到 localStorage
+    if (data.session) {
+      latestState = data;
+      persistSessionToLocalStorage();
+    }
     revealNpcDialogueSequential(storyAiLine, data.text || "", {
       onComplete: () => setStoryChoicesLocked(false),
     });
@@ -3042,7 +5402,7 @@ async function postMgmt(tag) {
     setStoryChoicesLocked(false);
     if (storyAiLine) storyAiLine.textContent = "";
   } catch (e) {
-    showToast(String(e.message || e), 5200);
+    showErrorToast(e, 5200);
   }
 }
 
@@ -3122,8 +5482,111 @@ function appendFacilityManagementCards(extrasEl, managementTags) {
   }
 }
 
+/**
+ * 脚本化固定多轮对话（替代自由文本输入）。
+ * 每轮显示 NPC 台词 → 玩家选择固定选项 → 推进至下一轮或最终选择。
+ * 由 renderNpcPanel 在 nar.pre_dialogue 存在时调用。
+ */
+let scriptedDialogueRound = 0;
+let scriptedDialogueNar = null;
+let scriptedDialogueState = null;
+
+function resetScriptedDialogue() {
+  scriptedDialogueRound = 0;
+  scriptedDialogueNar = null;
+  scriptedDialogueState = null;
+}
+
+function renderScriptedDialogue(stateData, npc, nar) {
+  scriptedDialogueNar = nar;
+  scriptedDialogueState = stateData;
+  scriptedDialogueRound = 0;
+
+  // 设置 NPC 标题和立绘
+  const row = (stateData.overworld_npcs || []).find((r) => r.id === npc.id);
+  storyTitle.textContent = row?.name || npc.name;
+  storySub.textContent = "";
+  storyBullets.innerHTML = "";
+  setStoryPortrait("npc", npc.id, row?.name || npc.name);
+
+  // 展示第一轮
+  advanceScriptedDialogueRound();
+}
+
+function advanceScriptedDialogueRound() {
+  const rounds = scriptedDialogueNar?.pre_dialogue;
+  if (!rounds || scriptedDialogueRound >= rounds.length) {
+    // 所有脚本轮次结束 → 展示最终故事选项
+    showFinalScriptedChoices();
+    return;
+  }
+
+  const rd = rounds[scriptedDialogueRound];
+  storyChoices.innerHTML = "";
+
+  // 显示 NPC 台词气泡
+  if (rd.npc_line_zh) {
+    addChatBubble("npc", rd.npc_line_zh);
+  }
+  // 副文本（情绪/动作提示）
+  if (rd.npc_subtext_zh) {
+    storySub.textContent = rd.npc_subtext_zh;
+  } else {
+    storySub.textContent = "";
+  }
+
+  // 渲染当前轮次的玩家选项
+  const opts = rd.player_options || [];
+  for (const opt of opts) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = opt.label_zh;
+    b.className = "scripted-dialogue-opt";
+    b.addEventListener("click", () => {
+      // 显示玩家台词气泡
+      if (opt.player_line_zh) {
+        addChatBubble("player", opt.player_line_zh);
+      }
+      // 推进到下一轮
+      scriptedDialogueRound++;
+      advanceScriptedDialogueRound();
+    });
+    storyChoices.appendChild(b);
+  }
+  syncStoryChoicesLayout();
+}
+
+function showFinalScriptedChoices() {
+  storyChoices.innerHTML = "";
+  storySub.textContent = "她的话说完了。接下来，轮到你做决定。";
+
+  const nar = scriptedDialogueNar;
+  if (!nar || !nar.choices) return;
+
+  for (const c of nar.choices) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = c.label_zh;
+    b.className = "scripted-dialogue-opt scripted-dialogue-opt--final";
+    b.addEventListener("click", () => {
+      // 提交最终选择（沿用 postChoice 逻辑）
+      postChoice(c.id);
+    });
+    storyChoices.appendChild(b);
+  }
+  syncStoryChoicesLayout();
+}
+
+// 面板关闭时重置脚本对话状态（在 closeStoryUI 中调用）
+const _origCloseStoryUI = closeStoryUI;
+closeStoryUI = function () {
+  resetScriptedDialogue();
+  _origCloseStoryUI();
+};
+
 function renderNpcPanel(stateData, checkData, npc, opts = {}) {
   const skipOpening = !!opts.skipOpening;
+  setStorySpriteColumnVisible(true);
   storyExtras.innerHTML = "";
   storyMeta.innerHTML = "";
   storyBody.classList.add("story-body--npc-dialogue");
@@ -3132,14 +5595,42 @@ function renderNpcPanel(stateData, checkData, npc, opts = {}) {
   storyTitle.textContent = row?.name || npc.name;
   storySub.textContent = "";
   storyBullets.innerHTML = "";
-  setPortraitPlaceholder(npc.id, `${row?.name || npc.name}\n（立绘占位）`);
+  setStoryPortrait("npc", npc.id, row?.name || npc.name);
   const nar = checkData.narrative;
   storyChoices.innerHTML = "";
-  const hasBranch =
-    (nar.fin_endings && nar.fin_endings.length > 0) ||
-    (nar.choices && nar.choices.length > 0) ||
-    !!nar.can_advance_default;
-  if (hasBranch) addChoiceButtons(nar);
+
+  // 脚本化固定对话：pre_dialogue 存在时替代自由文本/传统模式
+  const hasPreDialogue = nar.pre_dialogue && nar.pre_dialogue.length > 0;
+
+  // 自由对话模式：story_focus 且有选项（非 FIN-02 结局选择）—— pre_dialogue 优先
+  const useFreeChat =
+    !hasPreDialogue &&
+    focus &&
+    nar.choices &&
+    nar.choices.length > 0 &&
+    nar.node_id !== "FIN-02";
+
+  if (hasPreDialogue) {
+    // 脚本对话模式：跳过 AI 开场白，直接展示固定对话轮次
+    renderScriptedDialogue(stateData, npc, nar);
+    syncStoryChoicesLayout();
+    return;
+  } else if (nar.node_id === "FIN-02" && nar.fin_endings?.length) {
+    addChoiceButtons(nar);
+  } else if (useFreeChat) {
+    // 使用自由文本对话 UI（初始隐藏，开场对白完成后显示）
+    setupChatUI(npc.id, nar);
+    if (chatInputContainer) {
+      chatInputContainer.style.display = "none";
+    }
+  } else {
+    // 传统模式
+    const hasBranch =
+      (nar.fin_endings && nar.fin_endings.length > 0) ||
+      (nar.choices && nar.choices.length > 0) ||
+      !!nar.can_advance_default;
+    if (hasBranch) addChoiceButtons(nar);
+  }
   syncStoryChoicesLayout();
   if (nar.node_id === "02-01" && npc.id === "dr_lin" && focus && !plotHasFlag(stateData.session, "datastick_decrypt_complete")) {
     storySub.textContent =
@@ -3154,17 +5645,68 @@ function renderNpcPanel(stateData, checkData, npc, opts = {}) {
     wrap.appendChild(db);
     storyExtras.appendChild(wrap);
   }
-  if (storyChoices.children.length > 0 && !skipOpening) setStoryChoicesLocked(true);
+  // 自由对话模式下，选项区域不锁定（因为根本没有按钮）
+  if (!useFreeChat && storyChoices.children.length > 0 && !skipOpening) setStoryChoicesLocked(true);
   if (!skipOpening) queueMicrotask(() => postNpcOpening(npc.id, focus));
 }
 
 function renderFacilityPanel(stateData, checkData, fac) {
+  setStorySpriteColumnVisible(false);
+  if (storyPortraitImgEl) {
+    storyPortraitImgEl.hidden = true;
+    storyPortraitImgEl.removeAttribute("src");
+  }
   storyExtras.innerHTML = "";
   storyMeta.innerHTML = "";
   storyBody.classList.remove("story-body--npc-dialogue");
-  storyTitle.textContent = fac.name;
-  setPortraitPlaceholder(fac.id, `${fac.name}\n（设施占位）`);
   const nar = stateData.narrative;
+
+  // ── FIN-03 结局后日谈 ──
+  if (nar.node_id === "FIN-03" && nar.fin03_epilogue) {
+    const ep = nar.fin03_epilogue;
+    storyTitle.textContent = ep.title_zh;
+    storySub.textContent = "";
+    storyBullets.innerHTML = "";
+    storyChoices.innerHTML = "";
+    storyBody.classList.add("story-body--npc-dialogue");
+    storyAiLine.textContent = "";
+    storyAiLine.hidden = true;
+
+    const epWrap = document.createElement("div");
+    epWrap.className = "fin03-epilogue";
+    const epTitle = document.createElement("div");
+    epTitle.className = "fin03-epilogue__title";
+    epTitle.textContent = ep.title_zh;
+    epWrap.appendChild(epTitle);
+
+    if (ep.tone_zh) {
+      const epTone = document.createElement("div");
+      epTone.className = "fin03-epilogue__tone";
+      epTone.textContent = "— " + ep.tone_zh + " —";
+      epWrap.appendChild(epTone);
+    }
+
+    const epText = document.createElement("div");
+    epText.className = "fin03-epilogue__text";
+    for (const para of ep.epilogue_zh.split("\n\n")) {
+      const p = document.createElement("p");
+      p.textContent = para;
+      epText.appendChild(p);
+    }
+    epWrap.appendChild(epText);
+
+    const epClose = document.createElement("button");
+    epClose.type = "button";
+    epClose.className = "fin03-epilogue__close";
+    epClose.textContent = "源纪元 · 岸线侵入 — 完";
+    epClose.addEventListener("click", closeStoryUI);
+    epWrap.appendChild(epClose);
+
+    storyExtras.appendChild(epWrap);
+    return;
+  }
+
+  storyTitle.textContent = fac.name;
   const rel = checkData.story_relevant;
   const uq = checkData.upgrade_choice_id;
   storySub.textContent = rel
@@ -3180,20 +5722,44 @@ function renderFacilityPanel(stateData, checkData, fac) {
         ],
   );
   storyChoices.innerHTML = "";
-  if (nar.node_id === "01-02" && rel) {
-    if (uq) {
-      const pick = (nar.choices || []).find((c) => c.id === uq);
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = pick ? `在此确认：${pick.label_zh}` : "确认升级选择";
-      b.addEventListener("click", () => postChoice(uq));
-      storyChoices.appendChild(b);
+
+  // 通用：节点有 facility→choice 映射时，在当前设施展示对应单一确认按钮
+  if (rel && uq) {
+    const pick = (nar.choices || []).find((c) => c.id === uq);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = pick ? `在此确认：${pick.label_zh}` : "确认决策方向";
+    b.addEventListener("click", () => postChoice(uq));
+    storyChoices.appendChild(b);
+  }
+
+  // 指挥中心：有剧情选项时展示全部（会议室决策视图）
+  if (fac.id === "command" && rel && (nar.choices?.length > 0 || nar.fin_endings?.length > 0)) {
+    if (nar.node_id === "01-02") {
+      storySub.textContent = "会议室：三项升级优先（与物资会议一致）。";
+    } else if (nar.node_id === "PRO-02") {
+      storySub.textContent = "指挥中心：决定本次危机优先方向。";
+    } else if (nar.node_id === "FIN-02") {
+      storySub.textContent = "指挥部：在此做出最终选择。";
     }
-    if (fac.id === "command") {
-      storySub.textContent = "会议室：三项升级优先（与节点 01-02 一致）。";
-      addChoiceButtons(nar);
+    addChoiceButtons(nar);
+  }
+
+  // 02-02 记忆闪回：指挥中心作为推进入口
+  if (nar.node_id === "02-02" && fac.id === "command" && rel) {
+    const acked = plotHasFlag(stateData.session, "memory_flash_02_02_ack");
+    storySub.textContent = acked
+      ? "记忆闪回已观看，可推进至下一段剧情。"
+      : "一段侵入式记忆即将重演——全屏演出结束并确认后，可在此推进剧情。";
+    if (acked && nar.can_advance_default) {
+      const adv = document.createElement("button");
+      adv.type = "button";
+      adv.textContent = "推进剧情（进入下一段）";
+      adv.addEventListener("click", () => postAdvance());
+      storyChoices.appendChild(adv);
     }
   }
+
   if (nar.node_id === "02-01" && fac.id === "lab" && rel && !plotHasFlag(stateData.session, "datastick_decrypt_complete")) {
     storySub.textContent =
       "林博士使用实验室隔离离线槽读取加密数据棒；仪表稳定后即视为解密完成（对白由剧情生成补充细节）。";
@@ -3222,11 +5788,11 @@ function renderFacilityPanel(stateData, checkData, fac) {
     storyExtras.appendChild(document.createElement("br"));
     storyExtras.appendChild(sb);
   }
-  if (rel && nar.can_advance_default && !(nar.node_id === "01-02" && uq)) {
+  if (rel && nar.can_advance_default && !uq) {
     const adv = document.createElement("button");
     adv.type = "button";
     adv.className = "secondary";
-    adv.textContent = "推进剧情（本节点无分支）";
+    adv.textContent = "推进剧情（直线前进）";
     adv.addEventListener("click", () => postAdvance());
     storyChoices.appendChild(adv);
   }
@@ -3240,7 +5806,7 @@ function renderFacilityPanel(stateData, checkData, fac) {
     appendFacilityManagementCards(storyExtras, hint.management_tags);
   }
 
-  /** 须与后端 `game/facility_sim_ops.FACILITY_ACTIVITY_REGIONS` 键一致（带工作台静默玩法的地图设施） */
+  /** 须与后端 `game/facility_sim_ops.FACILITY_IDLE_DAILY_ACCRUAL` 键一致（带挂机积存领取的地图设施） */
   const SILENT_OPS_FACILITY_IDS = new Set([
     "mine",
     "mine_ruins",
@@ -3301,24 +5867,10 @@ function renderFacilityPanel(stateData, checkData, fac) {
             showToast("积存已并入基地资源。", 2800);
             await refreshOpenStoryPanel();
           } catch (e) {
-            showToast(e.message || String(e), 4200);
+            showErrorToast(e);
           }
         });
         row.appendChild(bClaim);
-        if ((simOv.activities || []).length) {
-          const bGo = document.createElement("button");
-          bGo.type = "button";
-          bGo.className = "facility-sim-btn facility-sim-btn--primary";
-          bGo.textContent = "手动作业（开小窗校准）";
-          bGo.addEventListener("click", () => openFacilitySimWorkbench(fac, simOv));
-          row.appendChild(bGo);
-        } else {
-          const bx = document.createElement("span");
-          bx.className = "facility-sim-no-act";
-          bx.textContent =
-            "当前清单中无该项设施对应的可执行作业（多为区域门禁或未满足冷却/物资）；仍可走侧栏资源行动入口。";
-          row.appendChild(bx);
-        }
         box.appendChild(row);
         storyExtras.appendChild(box);
       }
@@ -3331,6 +5883,30 @@ function renderFacilityPanel(stateData, checkData, fac) {
 async function openStoryFromInteract(t) {
   try {
     lastStoryInteract = t;
+
+    if (t.kind === "facility" && t.id === "command") {
+      // 部分剧情节点需走设施面板流程（会议室决策/记忆闪回推进），不走工坊捷径
+      const st = await fetchJSON(gameApiUrl("/api/state"));
+      const nid = st?.narrative?.node_id;
+      if (nid !== "02-02" && nid !== "01-02" && nid !== "PRO-02" && nid !== "FIN-02" && nid !== "FIN-03") {
+        await openWorkshopScene("command");
+        return;
+      }
+      // 剧情节点：沿用已获取的状态，跳过下方重复 fetch
+      latestState = st;
+      renderMgmtResourcesHud(st.session);
+      renderMgmtLogStrip(st.management_recent);
+      npcScheduleSnapshot = scheduledNpcWorldPositions(st);
+      syncNpcTargetsFromSchedule(npcScheduleSnapshot.pos);
+      maybeEchoFacilityPing(t.id);
+      const chk = await fetchJSON(gameApiUrl("/api/facility/check"), {
+        method: "POST",
+        body: JSON.stringify({ facility_id: t.id }),
+      });
+      renderFacilityPanel(st, chk, t);
+      openStoryUI();
+      return;
+    }
     if (t.kind === "npc" && t.id === "dr_lin" && npcScheduleSnapshot.meta?.dr_lin_sleep) {
       showToast("林博士正在休息（深夜至清晨）。请日间前往医疗实验室、指挥中心或（若已启用）地下监听站。", 4200);
       return;
@@ -3357,12 +5933,12 @@ async function openStoryFromInteract(t) {
     }
     openStoryUI();
   } catch (e) {
-    showToast(`剧情服务：${e.message || e}`, 4200);
+    showToast("剧情加载失败，请刷新页面后重试。", 4200);
   }
 }
 
-storyClose.addEventListener("click", closeStoryUI);
-storyBackdrop.addEventListener("click", (ev) => {
+storyClose?.addEventListener("click", closeStoryUI);
+storyBackdrop?.addEventListener("click", (ev) => {
   if (ev.target === storyBackdrop) closeStoryUI();
 });
 window.addEventListener("keydown", (ev) => {
@@ -3372,7 +5948,13 @@ window.addEventListener("keydown", (ev) => {
       closeSandboxPlaybook();
       return;
     }
-    if (closeFacilitySimLayerIfOpen()) return;
+    if (isWorkshopOpen()) {
+      if (handleWorkshopEscapeKey()) return;
+    }
+    if (document.body.classList.contains("scene-workshop") || isWorkshopOpen()) {
+      exitWorkshopMapScene();
+      return;
+    }
     if (!storyBackdrop.classList.contains("hidden")) closeStoryUI();
   }
 });
@@ -3384,7 +5966,7 @@ document.getElementById("sandbox-playbook-open")?.addEventListener("click", () =
 
 setInterval(refreshTopBar, 3200);
 refreshTopBar();
-initDebugJumpBar();
+// dev 面板由 DOMContentLoaded → initDevPanel() 初始化
 
 const keys = new Set();
 let lastTs = 0;
@@ -3398,20 +5980,49 @@ let lastAccessToastAt = 0;
 let lastOffroadToastAt = 0;
 
 const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
 const mini = document.getElementById("minimap");
-const mctx = mini.getContext("2d");
+let ctx = null;
+let mctx = null;
+
+function showExplorerBootError(msg) {
+  let el = document.getElementById("explorer-boot-error");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "explorer-boot-error";
+    el.className = "explorer-api-banner";
+    el.setAttribute("role", "alert");
+    document.body.appendChild(el);
+  }
+  el.classList.remove("hidden");
+  el.textContent = msg;
+}
+
+if (!canvas || !mini) {
+  showExplorerBootError("页面结构不完整：找不到 #game 或 #minimap 画布，请确认从 web/explorer/index.html 打开。");
+} else {
+  ctx = canvas.getContext("2d");
+  mctx = mini.getContext("2d");
+  if (!ctx || !mctx) {
+    showExplorerBootError("无法初始化 2D 画布，请尝试更换浏览器或关闭硬件加速后重试。");
+  }
+}
+
 const wsizeEl = document.getElementById("wsize");
 wsizeEl && (wsizeEl.textContent = `${WORLD.w}×${WORLD.h}`);
 
 function resize() {
+  if (!canvas || !ctx) return;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = Math.floor(canvas.clientWidth * dpr);
-  canvas.height = Math.floor(canvas.clientHeight * dpr);
+  const cw = Math.max(1, canvas.clientWidth);
+  const ch = Math.max(1, canvas.clientHeight);
+  canvas.width = Math.floor(cw * dpr);
+  canvas.height = Math.floor(ch * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  refreshWorkshopTutorialLayout();
 }
 window.addEventListener("resize", resize);
-resize();
+if (canvas && ctx) resize();
+bootWorkshopUiState();
 
 /** 初始化任务面板标签切换 */
 function initObjectivesTabs() {
@@ -3428,6 +6039,7 @@ function initObjectivesTabs() {
   });
 }
 initObjectivesTabs();
+initObjectivesTabIcons();
 
 /**
  * 镜头焦点落在主画布上的坐标（CSS 逻辑像素，须在 resize 设置的 dpr 缩放变换下使用）。
@@ -3501,11 +6113,13 @@ function viewportFocusInCanvas() {
   };
 }
 
-canvas.addEventListener("mousemove", (ev) => {
-  const br = canvas.getBoundingClientRect();
-  mouseCanvasX = ev.clientX - br.left;
-  mouseCanvasY = ev.clientY - br.top;
-});
+if (canvas) {
+  canvas.addEventListener("mousemove", (ev) => {
+    const br = canvas.getBoundingClientRect();
+    mouseCanvasX = ev.clientX - br.left;
+    mouseCanvasY = ev.clientY - br.top;
+  });
+}
 
 window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
@@ -3578,6 +6192,149 @@ function tryMoveEntity(cx, cy, nx, ny, r) {
   return { x, y };
 }
 
+/** 路格中心（与可走判定共用 ENTITY_R）；格左上为 TILE 对齐锚点 */
+function tileCenterFromGrid(tx, ty) {
+  return { x: tx * TILE + TILE * 0.5, y: ty * TILE + TILE * 0.5 };
+}
+
+function pixelToTileGrid(px, py) {
+  return {
+    tx: Math.min(MAP_TILES_X - 1, Math.max(0, Math.floor(px / TILE))),
+    ty: Math.min(MAP_TILES_Y - 1, Math.max(0, Math.floor(py / TILE))),
+  };
+}
+
+/** 是否与 NPC 可走规则一致（路格 + 禁区/建筑）；格心试探 */
+function canNpcStandPixel(px, py) {
+  return !movementObstacleAt(px, py, ENTITY_R);
+}
+
+function canNpcStandOnRoadTile(tx, ty) {
+  if (tileTypeAt(tx, ty) !== T_ROAD) return false;
+  const c = tileCenterFromGrid(tx, ty);
+  return canNpcStandPixel(c.x, c.y);
+}
+
+/** 像素附近最近可站立路格（方形环扩散） */
+function nearestStandableRoadTile(px, py, maxRing = 100) {
+  const { tx: tx0, ty: ty0 } = pixelToTileGrid(px, py);
+  for (let ring = 0; ring <= maxRing; ring++) {
+    const yTop = ty0 - ring;
+    const yBot = ty0 + ring;
+    const xLeft = tx0 - ring;
+    const xRight = tx0 + ring;
+    if (ring === 0 && canNpcStandOnRoadTile(tx0, ty0)) return { tx: tx0, ty: ty0 };
+    if (ring === 0) continue;
+    for (let dx = -ring; dx <= ring; dx++) {
+      const txA = tx0 + dx;
+      if (canNpcStandOnRoadTile(txA, yTop)) return { tx: txA, ty: yTop };
+      if (canNpcStandOnRoadTile(txA, yBot)) return { tx: txA, ty: yBot };
+    }
+    for (let dy = -ring + 1; dy <= ring - 1; dy++) {
+      const tyA = ty0 + dy;
+      if (canNpcStandOnRoadTile(xLeft, tyA)) return { tx: xLeft, ty: tyA };
+      if (canNpcStandOnRoadTile(xRight, tyA)) return { tx: xRight, ty: tyA };
+    }
+  }
+  return null;
+}
+
+/** BFS 结果去掉共线中段，仅在路口／拐弯处保留路点（横纵切换） */
+function compressCardinalRoadTilePath(path) {
+  if (path.length <= 2) return path.slice();
+  const out = [path[0]];
+  for (let i = 1; i < path.length - 1; i++) {
+    const udx = Math.sign(path[i].tx - path[i - 1].tx);
+    const udy = Math.sign(path[i].ty - path[i - 1].ty);
+    const vdx = Math.sign(path[i + 1].tx - path[i].tx);
+    const vdy = Math.sign(path[i + 1].ty - path[i].ty);
+    if (udx !== vdx || udy !== vdy) out.push(path[i]);
+  }
+  out.push(path[path.length - 1]);
+  return out;
+}
+
+function bfsRoadTilePath(start, goal) {
+  if (start.tx === goal.tx && start.ty === goal.ty) return [start];
+  const N = MAP_TILES_X * MAP_TILES_Y;
+  const parent = new Int32Array(N).fill(-1);
+  const ii = (tx, ty) => ty * MAP_TILES_X + tx;
+  const si = ii(start.tx, start.ty);
+  const gi = ii(goal.tx, goal.ty);
+  parent[si] = si;
+  const q = [si];
+  for (let qi = 0; qi < q.length; qi++) {
+    const cur = q[qi];
+    if (cur === gi) break;
+    const tcx = cur % MAP_TILES_X;
+    const tcy = (cur / MAP_TILES_X) | 0;
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const nx = tcx + dx;
+      const ny = tcy + dy;
+      if (nx < 0 || ny < 0 || nx >= MAP_TILES_X || ny >= MAP_TILES_Y) continue;
+      const ni = ii(nx, ny);
+      if (parent[ni] !== -1) continue;
+      if (!canNpcStandOnRoadTile(nx, ny)) continue;
+      parent[ni] = cur;
+      q.push(ni);
+    }
+  }
+  if (parent[gi] === -1) return null;
+  const tiles = [];
+  let w = gi;
+  while (w !== si) {
+    tiles.push({ tx: w % MAP_TILES_X, ty: (w / MAP_TILES_X) | 0 });
+    w = parent[w];
+  }
+  tiles.push(start);
+  tiles.reverse();
+  return tiles;
+}
+
+/** 压缩路点 → 像素；寻路失败时 roadPathWp = null → 再走直线兜底 */
+function npcRebuildRoadWaypoints(b) {
+  const st = nearestStandableRoadTile(b.x, b.y, 140);
+  const en = nearestStandableRoadTile(b.targetX, b.targetY, 140);
+  if (!st || !en) {
+    b.roadPathWp = null;
+    b.pathSegIx = 0;
+    return;
+  }
+  const raw = bfsRoadTilePath(st, en);
+  if (!raw || raw.length === 0) {
+    b.roadPathWp = null;
+    b.pathSegIx = 0;
+    return;
+  }
+  const comp = compressCardinalRoadTilePath(raw);
+  b.roadPathWp = comp.map((t) => tileCenterFromGrid(t.tx, t.ty));
+  b.pathSegIx = b.roadPathWp.length > 1 ? 1 : 0;
+}
+
+/**
+ * 朝 (tx,ty) 只沿横轴或纵轴移动一步（本帧），优先修正误差较大的一轴，
+ * 与「沿街直行到路口再拐」观感一致（不在斜路上对角滑移）。
+ */
+function npcStepCardinalToward(cx, cy, tx, ty, stepMax, radius) {
+  const dx = tx - cx;
+  const dy = ty - cy;
+  if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return { x: cx, y: cy, arrived: true };
+  let stepX = 0;
+  let stepY = 0;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    stepX = Math.sign(dx) * Math.min(Math.abs(dx), stepMax);
+  } else {
+    stepY = Math.sign(dy) * Math.min(Math.abs(dy), stepMax);
+  }
+  const moved = tryMoveEntity(cx, cy, cx + stepX, cy + stepY, radius);
+  return { x: moved.x, y: moved.y, arrived: false };
+}
+
 /** NPC 物理位置与当前日程目标（与玩家同速、同半径碰撞） */
 const npcBodies = {};
 
@@ -3599,100 +6356,66 @@ function syncNpcTargetsFromSchedule(pos) {
         targetX: p.x,
         targetY: p.y,
         goalKey: key,
-        wanderOX: 0,
-        wanderOY: 0,
-        wanderTX: 0,
-        wanderTY: 0,
-        wanderTimer: 0,
-        headingWobble: 0,
+        roadPathWp: null,
+        pathSegIx: 0,
       };
+      npcRebuildRoadWaypoints(npcBodies[id]);
       continue;
     }
     if (npcBodies[id].goalKey !== key) {
       npcBodies[id].targetX = p.x;
       npcBodies[id].targetY = p.y;
       npcBodies[id].goalKey = key;
-      npcBodies[id].wanderOX = 0;
-      npcBodies[id].wanderOY = 0;
-      npcBodies[id].wanderTX = 0;
-      npcBodies[id].wanderTY = 0;
-      npcBodies[id].wanderTimer = 0;
-      npcBodies[id].headingWobble = 0;
+      npcRebuildRoadWaypoints(npcBodies[id]);
     }
   }
 }
 
-/** 围绕日程锚点的随机游荡半径（像素） */
-const NPC_WANDER_RADIUS_LO = 28;
-const NPC_WANDER_RADIUS_HI = 72;
-/** NPC 行走速度相对玩家的比例（略慢更像逛基地） */
-const NPC_WALK_SPEED_SCALE = 0.5;
-/** 游荡偏移平滑（越大越快贴上新随机点） */
-const NPC_WANDER_SMOOTH = 2.8;
-/** 朝向微摆：弧度级随机游走，避免笔直斜线 */
-const NPC_HEADING_WOBBLE_GAIN = 1.25;
-const NPC_HEADING_WOBBLE_DECAY = 0.988;
-const NPC_HEADING_WOBBLE_MAX = 0.55;
-
-function _npcWanderTick(id, b, dt) {
-  b.wanderTimer -= dt;
-  if (b.wanderTimer <= 0) {
-    const tick = Math.floor(performance.now() * 0.001) ^ hashHour(id, (b.goalKey || "").length + 13);
-    const r = NPC_WANDER_RADIUS_LO + (hashHour(id, tick) % (NPC_WANDER_RADIUS_HI - NPC_WANDER_RADIUS_LO));
-    const ang = ((hashHour(id, tick + 1) % 360) * Math.PI) / 180;
-    b.wanderTX = Math.cos(ang) * r;
-    b.wanderTY = Math.sin(ang) * r;
-    b.wanderTimer = 1.4 + (hashHour(id, tick + 2) % 120) / 100;
-  }
-  const k = Math.min(1, NPC_WANDER_SMOOTH * dt);
-  b.wanderOX += (b.wanderTX - b.wanderOX) * k;
-  b.wanderOY += (b.wanderTY - b.wanderOY) * k;
-}
-
+/**
+ * NPC：`speed × dt` 与玩家一致。优先沿路格 BFS 路径，每帧仅在 X 或 Y 上迈步（直行到路口再拐）；
+ * 无路或卡住时退回原来的方向向量 + tryMoveEntity 贴墙滑动。
+ */
 function stepAllNpcBodies(dt) {
   const r = PLAYER.r;
-  const spBase = PLAYER.speed * dt * NPC_WALK_SPEED_SCALE;
+  const sp = PLAYER.speed * dt;
   for (const id of Object.keys(npcBodies)) {
     if (!isNpcVisibleOnMap(id)) continue;
     const b = npcBodies[id];
-    if (typeof b.wanderTimer !== "number" || Number.isNaN(b.wanderTimer)) {
-      b.wanderOX = 0;
-      b.wanderOY = 0;
-      b.wanderTX = 0;
-      b.wanderTY = 0;
-      b.wanderTimer = 0;
-      b.headingWobble = typeof b.headingWobble === "number" ? b.headingWobble : 0;
-    }
-    _npcWanderTick(id, b, dt);
     if (movementObstacleAt(b.x, b.y, r)) {
       b.x = b.targetX;
       b.y = b.targetY;
     }
-    const aimX = b.targetX + b.wanderOX;
-    const aimY = b.targetY + b.wanderOY;
-    let dx = aimX - b.x;
-    let dy = aimY - b.y;
+    const dx = b.targetX - b.x;
+    const dy = b.targetY - b.y;
     const len = Math.hypot(dx, dy);
-    if (len < 18) {
-      b.x = aimX;
-      b.y = aimY;
+    if (len < 10) {
+      b.x = b.targetX;
+      b.y = b.targetY;
       continue;
     }
-    b.headingWobble += (Math.random() - 0.5) * NPC_HEADING_WOBBLE_GAIN * dt;
-    b.headingWobble *= NPC_HEADING_WOBBLE_DECAY;
-    if (b.headingWobble > NPC_HEADING_WOBBLE_MAX) b.headingWobble = NPC_HEADING_WOBBLE_MAX;
-    if (b.headingWobble < -NPC_HEADING_WOBBLE_MAX) b.headingWobble = -NPC_HEADING_WOBBLE_MAX;
+    const road = b.roadPathWp;
+    if (road && road.length >= 2) {
+      while (b.pathSegIx < road.length) {
+        const wp = road[b.pathSegIx];
+        const res = npcStepCardinalToward(b.x, b.y, wp.x, wp.y, sp, r);
+        if (res.arrived) {
+          b.pathSegIx++;
+          continue;
+        }
+        b.x = res.x;
+        b.y = res.y;
+        break;
+      }
+      if (b.pathSegIx >= road.length) {
+        const fin = npcStepCardinalToward(b.x, b.y, b.targetX, b.targetY, sp, r);
+        b.x = fin.x;
+        b.y = fin.y;
+      }
+      continue;
+    }
     const ux = dx / len;
     const uy = dy / len;
-    const c = Math.cos(b.headingWobble);
-    const s = Math.sin(b.headingWobble);
-    const wx = ux * c - uy * s;
-    const wy = ux * s + uy * c;
-    const jitter = 0.92 + (hashHour(id, Math.floor(performance.now() * 0.3) % 500) % 17) / 100;
-    const sp = spBase * jitter;
-    const stepX = wx * sp;
-    const stepY = wy * sp;
-    const res = tryMoveEntity(b.x, b.y, b.x + stepX, b.y + stepY, r);
+    const res = tryMoveEntity(b.x, b.y, b.x + ux * sp, b.y + uy * sp, r);
     b.x = res.x;
     b.y = res.y;
   }
@@ -3714,6 +6437,7 @@ function pickHoveredExplorerZone() {
 }
 
 function pollInput(dt) {
+  if (isWorkshopOpen() || isMemoryFlashOverlayVisible()) return;
   let dx = 0;
   let dy = 0;
   if (keys.has("w") || keys.has("arrowup")) dy -= 1;
@@ -3732,7 +6456,7 @@ function dist(ax, ay, bx, by) {
   return Math.hypot(ax - bx, ay - by);
 }
 
-/** 点距轴对齐矩形（点在矩形内为 0）— 设施交互：以外沿距离判定「是否贴墙」 */
+/** 点距轴对齐矩形（点在矩形内为 0）— 设施交互：以外沿距离判定是否足够靠近 */
 function distPointToRect(px, py, rect) {
   const nx = Math.max(rect.x, Math.min(px, rect.x + rect.w));
   const ny = Math.max(rect.y, Math.min(py, rect.y + rect.h));
@@ -3741,8 +6465,11 @@ function distPointToRect(px, py, rect) {
 
 /** NPC：与圆心距离小于此值可交互 */
 const NPC_INTERACT_RADIUS = 102;
-/** 设施：仅当与建筑 core 外沿距离 ≤ 此值时可交互（须贴近墙体，站远处无效） */
-const FACILITY_WALL_INTERACT_MAX = 38;
+/** 设施：与占地外沿距离 ≤ 此值时可交互（沿路缘贴近，远处无效） */
+const FACILITY_INTERACT_MAX = 52;
+
+/** 路点 POI：与圆心距离小于 radius 可交互 */
+const POI_INTERACT_RADIUS = 54;
 
 function nearestInteract() {
   let best = null;
@@ -3754,9 +6481,18 @@ function nearestInteract() {
       best = { kind: "npc", ...n };
     }
   }
+  for (const p of MAP_POIS) {
+    const d = dist(PLAYER.x, PLAYER.y, p.x, p.y);
+    const rad = p.radius ?? POI_INTERACT_RADIUS;
+    if (d > rad) continue;
+    if (!best || d < bestD) {
+      bestD = d;
+      best = { kind: p.kind, name: p.name, id: p.id, blurb: p.blurb };
+    }
+  }
   for (const f of FACILITIES) {
-    const d = distPointToRect(PLAYER.x, PLAYER.y, f.core);
-    if (d > FACILITY_WALL_INTERACT_MAX) continue;
+    const d = distPointToRect(PLAYER.x, PLAYER.y, facilityFootprint(f));
+    if (d > FACILITY_INTERACT_MAX) continue;
     if (!best || d < bestD) {
       bestD = d;
       best = { kind: "facility", name: f.name, id: f.id };
@@ -3779,7 +6515,6 @@ function drawWorld(vw, vh) {
 
   const labelScale = 1 / viewZoom;
   const fzFacility = Math.max(11, Math.round(21 * labelScale));
-  const fzEzLab = Math.max(9, Math.round(13 * labelScale));
   const fzNpcName = Math.max(11, Math.round(15 * labelScale));
   const fzNpcBlur = Math.max(9, Math.round(12 * labelScale));
   const fzNpcHint = Math.max(8, Math.round(11 * labelScale));
@@ -3789,19 +6524,27 @@ function drawWorld(vw, vh) {
   const inc = incursionRatio();
   drawShoreIntrusion(ctx, inc, performance.now());
 
-  // 设施 POI：在格网上加描边与标牌（体块已由 TILE_MAP 铺设）
+  // 设施 POI：sprite 贴图 + 标牌（碰撞体块由 TILE_MAP 的 core 铺设）
   for (const f of FACILITIES) {
-    const c = f.core;
-    ctx.fillStyle = "rgba(18, 24, 34, 0.35)";
-    ctx.strokeStyle = "rgba(160, 200, 255, 0.45)";
-    ctx.lineWidth = 2;
-    ctx.fillRect(c.x, c.y, c.w, c.h);
-    ctx.strokeRect(c.x, c.y, c.w, c.h);
+    const draw = facilityDrawRect(f);
+    const foot = facilityFootprint(f);
+    const facImg = facilitySpriteImages.get(f.id);
+    const hasSprite = facImg?.complete && facImg.naturalWidth > 0;
+    if (hasSprite) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(facImg, draw.x, draw.y, draw.w, draw.h);
+    } else {
+      ctx.fillStyle = "rgba(18, 24, 34, 0.35)";
+      ctx.strokeStyle = "rgba(160, 200, 255, 0.45)";
+      ctx.lineWidth = 2;
+      ctx.fillRect(draw.x, draw.y, draw.w, draw.h);
+      ctx.strokeRect(draw.x, draw.y, draw.w, draw.h);
+    }
 
     const fitFs = Math.round(
       Math.min(
         fzFacility,
-        Math.max(10, Math.min(c.h * 0.42, c.w / Math.max(1, f.name.length * 0.58)))
+        Math.max(10, Math.min(draw.h * 0.38, draw.w / Math.max(1, f.name.length * 0.58)))
       )
     );
     ctx.font = `bold ${fitFs}px Segoe UI, PingFang SC, Microsoft YaHei, sans-serif`;
@@ -3810,54 +6553,34 @@ function drawWorld(vw, vh) {
     ctx.shadowColor = "rgba(0, 0, 0, 0.72)";
     ctx.shadowBlur = 5;
     ctx.fillStyle = "rgba(220, 235, 255, 0.96)";
-    ctx.fillText(f.name, c.x + c.w / 2, c.y + c.h / 2);
+    ctx.fillText(f.name, foot.x + foot.w / 2, foot.y + foot.h * 0.42);
     ctx.shadowBlur = 0;
     ctx.textBaseline = "alphabetic";
   }
 
-  const ez = latestState?.explorer_zones;
-  if (ez?.length) {
-    const lockedStroke = {
-      story: "rgba(255, 190, 120, 0.55)",
-      info: "rgba(200, 140, 255, 0.5)",
-      ability: "rgba(120, 210, 255, 0.52)",
-      resource: "rgba(255, 228, 90, 0.48)",
-      time: "rgba(100, 160, 255, 0.5)",
-      none: "rgba(140, 200, 255, 0.35)",
-    };
-    const lockedFill = {
-      story: "rgba(255, 160, 80, 0.07)",
-      info: "rgba(180, 120, 255, 0.06)",
-      ability: "rgba(80, 180, 255, 0.07)",
-      resource: "rgba(255, 220, 60, 0.06)",
-      time: "rgba(80, 140, 255, 0.07)",
-      none: "rgba(120, 180, 255, 0.04)",
-    };
-    for (const ex of ez) {
-      const lt = ex.lock_type || "none";
-      if (!ex.blocks_movement) {
-        ctx.strokeStyle = "rgba(110, 255, 170, 0.22)";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([6, 6]);
-        ctx.strokeRect(ex.x, ex.y, ex.w, ex.h);
-        ctx.setLineDash([]);
-        continue;
-      }
-      ctx.fillStyle = lockedFill[lt] || lockedFill.none;
-      ctx.fillRect(ex.x, ex.y, ex.w, ex.h);
-      ctx.strokeStyle = lockedStroke[lt] || lockedStroke.none;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([10, 7]);
-      ctx.strokeRect(ex.x, ex.y, ex.w, ex.h);
-      ctx.setLineDash([]);
-      const lab = ex.display_label_zh || ex.label_zh || "";
-      if (lab) {
-        ctx.font = `bold ${fzEzLab}px Segoe UI, PingFang SC, Microsoft YaHei, sans-serif`;
-        ctx.textAlign = "center";
-        ctx.fillStyle = "rgba(230, 240, 255, 0.82)";
-        ctx.fillText(lab, ex.x + ex.w / 2, ex.y + 18);
-      }
+  for (const p of MAP_POIS) {
+    const r = 22;
+    const isCommand = p.id === "underground_workshop_command";
+    ctx.fillStyle = isCommand ? "rgba(90, 200, 255, 0.16)" : "rgba(255, 200, 90, 0.18)";
+    ctx.strokeStyle = isCommand ? "rgba(120, 220, 255, 0.78)" : "rgba(255, 210, 120, 0.72)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = `bold ${Math.max(10, Math.round(13 * labelScale))}px Segoe UI, PingFang SC, Microsoft YaHei, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillStyle = isCommand ? "rgba(200, 245, 255, 0.96)" : "rgba(255, 236, 190, 0.96)";
+    ctx.shadowColor = "rgba(0, 0, 0, 0.72)";
+    ctx.shadowBlur = 4;
+    ctx.fillText(p.name, p.x, p.y - r - 8);
+    if (p.blurb) {
+      ctx.font = `${Math.max(8, Math.round(10 * labelScale))}px Segoe UI, PingFang SC, Microsoft YaHei, sans-serif`;
+      ctx.fillStyle = isCommand ? "rgba(160, 220, 255, 0.72)" : "rgba(255, 220, 160, 0.72)";
+      ctx.fillText(p.blurb, p.x, p.y + r + 12);
     }
+    ctx.shadowBlur = 0;
+    ctx.textBaseline = "alphabetic";
   }
 
   // NPC（可见性由剧情状态驱动）
@@ -4054,7 +6777,9 @@ function drawHud(vw, vh) {
     const raw =
       t.kind === "npc"
         ? `靠近：${t.name}（${t.blurb}）— 按 E 互动`
-        : `贴近建筑外墙：${t.name} — 按 E 查看`;
+        : t.kind === "facility"
+          ? `贴近设施外墙：${t.name} — 按 E 查看`
+          : `${t.name} — 按 E 互动`;
     const bw = Math.min(720, vw - 24);
     const { fx: winCx } = viewportFocusInCanvas();
     const bx = Math.min(Math.max(12, winCx - bw / 2), vw - bw - 12);
@@ -4110,6 +6835,7 @@ function drawHud(vw, vh) {
 }
 
 function drawMinimap() {
+  if (!mctx || !mini) return;
   const mw = mini.width;
   const mh = mini.height;
   mctx.clearRect(0, 0, mw, mh);
@@ -4139,21 +6865,9 @@ function drawMinimap() {
   mctx.stroke();
 
   for (const f of FACILITIES) {
-    const c = f.core;
+    const c = facilityFootprint(f);
     mctx.fillStyle = "rgba(80, 130, 210, 0.7)";
     mctx.fillRect(c.x * sx, c.y * sy, Math.max(1, c.w * sx), Math.max(1, c.h * sy));
-    mctx.strokeStyle = "rgba(150, 200, 255, 0.45)";
-    mctx.lineWidth = 1;
-    mctx.strokeRect(c.x * sx, c.y * sy, Math.max(1, c.w * sx), Math.max(1, c.h * sy));
-  }
-
-  const ez = latestState?.explorer_zones;
-  if (ez?.length) {
-    for (const z of ez) {
-      mctx.strokeStyle = z.blocks_movement ? "rgba(255, 190, 120, 0.65)" : "rgba(120, 255, 180, 0.35)";
-      mctx.lineWidth = 1;
-      mctx.strokeRect(z.x * sx, z.y * sy, z.w * sx, z.h * sy);
-    }
   }
 
   for (const n of effectiveNpcs()) {
@@ -4193,35 +6907,45 @@ function drawMinimap() {
 }
 
 function frame(ts) {
-  if (!lastTs) lastTs = ts;
-  const dt = Math.min(0.05, (ts - lastTs) / 1000);
-  lastTs = ts;
+  try {
+    ensureMainGameSceneVisible();
+    if (!ctx || !canvas) {
+      requestAnimationFrame(frame);
+      return;
+    }
+    if (!lastTs) lastTs = ts;
+    const dt = Math.min(0.05, (ts - lastTs) / 1000);
+    lastTs = ts;
 
-  pollInput(dt);
-  tickWorldClock(ts);
-  npcScheduleSnapshot = scheduledNpcWorldPositions(latestState);
-  syncNpcTargetsFromSchedule(npcScheduleSnapshot.pos);
-  stepAllNpcBodies(dt);
+    tickWorldClock(ts);
 
-  if (keys.has("e")) {
-    const t = nearestInteract();
-    if (t) openStoryFromInteract(t);
-    keys.delete("e");
+    if (!isWorkshopOpen() && !isMemoryFlashOverlayVisible()) {
+      pollInput(dt);
+      npcScheduleSnapshot = scheduledNpcWorldPositions(latestState);
+      syncNpcTargetsFromSchedule(npcScheduleSnapshot.pos);
+      stepAllNpcBodies(dt);
+
+      if (keys.has("e")) {
+        const t = nearestInteract();
+        if (t) openStoryFromInteract(t);
+        keys.delete("e");
+      }
+    }
+
+    const vw = Math.max(1, canvas.clientWidth);
+    const vh = Math.max(1, canvas.clientHeight);
+    const hzHover = pickHoveredExplorerZone();
+    canvas.style.cursor = hzHover?.blocks_movement ? "help" : "crosshair";
+    ctx.clearRect(0, 0, vw, vh);
+    drawWorld(vw, vh);
+    drawHud(vw, vh);
+    drawMinimap();
+  } catch (err) {
+    console.error("[explorer] frame error:", err);
   }
-
-  const vw = canvas.clientWidth;
-  const vh = canvas.clientHeight;
-  const hzHover = pickHoveredExplorerZone();
-  canvas.style.cursor = hzHover?.blocks_movement ? "help" : "crosshair";
-  // 与 resize() 的 dpr 缩放一致：按 CSS 像素尺寸清除（勿用 canvas.width/height，否则会错清/漏清）
-  ctx.clearRect(0, 0, vw, vh);
-  drawWorld(vw, vh);
-  drawHud(vw, vh);
-  drawMinimap();
-
   requestAnimationFrame(frame);
 }
 
 npcScheduleSnapshot = scheduledNpcWorldPositions(null);
 syncNpcTargetsFromSchedule(npcScheduleSnapshot.pos);
-requestAnimationFrame(frame);
+if (ctx && canvas) requestAnimationFrame(frame);

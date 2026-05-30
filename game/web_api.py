@@ -16,12 +16,19 @@ from narrative_ai.prompt_blocks import source_whisper_scene_zh
 
 from .bridge import (
     apply_management_decision,
+    apply_chat_emotional_shift,
     build_simulation_snapshot,
+    can_start_conversation_with,
+    CHOICE_UNVEIL_TURNS,
+    end_conversation,
     flush_management_queue,
+    get_conversation_turn_limits,
+    narrative_chat_choice_labels,
     narrative_story_beat_system,
     npc_agent_for,
     persist_source_exchange,
     source_session_from,
+    start_conversation,
 )
 from .default_session import get_session, session_lock, set_session
 from .explorer_objectives import objectives_upcoming_blurb, player_visible_objectives, prepend_sandbox_objectives_banner
@@ -52,6 +59,28 @@ from .facility_sim_ops import (
     claim_facility_idle,
     compact_facility_idle_bank_preview,
     facility_sim_overlays_snapshot,
+)
+from .underground_workshop import (
+    assign_npc as workshop_assign_npc,
+    build_device as workshop_build_device,
+    build_workshop_snapshot,
+    construct_workshop,
+    deliver_task as workshop_deliver_task,
+    demolish_device as workshop_demolish_device,
+    move_device as workshop_move_device,
+    discover_blueprint as workshop_discover_blueprint,
+    export_to_base as workshop_export_to_base,
+    execute_trade as workshop_execute_trade,
+    import_source_ore as workshop_import_source_ore,
+    rehabilitate_workshop,
+    rest_npc as workshop_rest_npc,
+    set_delegation as workshop_set_delegation,
+    set_production_caps as workshop_set_production_caps,
+    set_device_recipe as workshop_set_device_recipe,
+    toggle_device as workshop_toggle_device,
+    upgrade_device as workshop_upgrade_device,
+    workshop_entry_pass,
+    workshop_leave,
 )
 from .resource_activities import (
     activity_explorer_gate_ok,
@@ -118,16 +147,18 @@ def _norm_api_path(raw_path: str) -> str:
 
 
 # POST 路由清单（供 GET /api/routes 与 404 提示）
-# 默认存档文件路径（可通过环境变量 GAME_SAVE_PATH 自定义）
-_SAVE_FILE_DEFAULT = Path(__file__).resolve().parent.parent / "save" / "session.json"
+# 存档已迁移至前端 localStorage，后端不再自动读写磁盘文件。
+# 保留 GameSession.save_file/load_file 方法供调试用途，但 API 不再调用。
 
 
-def _get_save_file_path() -> Path:
-    """获取存档文件路径，支持环境变量覆盖。"""
-    env_path = os.environ.get("GAME_SAVE_PATH")
-    if env_path:
-        return Path(env_path).expanduser().resolve()
-    return _SAVE_FILE_DEFAULT
+def _attach_autosave(sess: GameSession) -> None:
+    """no-op：存档已迁移至前端 localStorage。"""
+    pass
+
+
+def _load_session_from_disk(set_sess: Callable[[GameSession], None]) -> None:
+    """no-op：存档已迁移至前端 localStorage，后端启动时始终使用全新会话。"""
+    pass
 
 
 POST_ROUTE_PATHS: tuple[str, ...] = (
@@ -138,6 +169,7 @@ POST_ROUTE_PATHS: tuple[str, ...] = (
     "/api/facility/check",
     "/api/npc/opening",
     "/api/npc/generate",
+    "/api/npc/chat",
     "/api/source/whisper",
     "/api/management",
     "/api/session/reset",
@@ -155,12 +187,32 @@ POST_ROUTE_PATHS: tuple[str, ...] = (
     "/api/sim/activity/catalog",
     "/api/sim/activity/run",
     "/api/sim/facility/claim_idle",
+    "/api/sim/workshop/enter",
+    "/api/sim/workshop/leave",
+    "/api/sim/workshop/construct",
+    "/api/sim/workshop/build",
+    "/api/sim/workshop/upgrade",
+    "/api/sim/workshop/demolish",
+    "/api/sim/workshop/move",
+    "/api/sim/workshop/toggle",
+    "/api/sim/workshop/assign_npc",
+    "/api/sim/workshop/set_recipe",
+    "/api/sim/workshop/delegate",
+    "/api/sim/workshop/set_caps",
+    "/api/sim/workshop/import_source_ore",
+    "/api/sim/workshop/export",
+    "/api/sim/workshop/deliver_task",
+    "/api/sim/workshop/trade",
+    "/api/sim/workshop/rest_npc",
+    "/api/sim/workshop/rehabilitate",
+    "/api/sim/west_shaft/enter",
     "/api/sim/dispatch/start",
     "/api/sim/dispatch/cancel",
     "/api/sim/morale/modify",
 )
 
 DEBUG_POST_ROUTES: tuple[str, ...] = ("/api/debug/jump_node",)
+DEBUG_GET_ROUTES: tuple[str, ...] = ("/api/debug/story_graph",)
 
 
 def _debug_api_enabled() -> bool:
@@ -173,6 +225,17 @@ def _post_routes_all() -> list[str]:
     if _debug_api_enabled():
         out.extend(DEBUG_POST_ROUTES)
     return out
+
+
+def _workshop_api_payload(sess: GameSession) -> dict[str, Any]:
+    snap = build_workshop_snapshot(sess)
+    payload = _state_payload(sess)
+    payload["ok"] = True
+    payload["workshop"] = snap
+    payload["west_shaft"] = snap
+    payload["underground_workshop"] = snap
+    payload["west_shaft_sim"] = snap
+    return payload
 
 
 def _management_recent_zh(sess: GameSession) -> list[dict[str, str]]:
@@ -193,6 +256,8 @@ def _sandbox_state_block(sess: GameSession) -> dict[str, Any]:
         "sandbox_generation": int(sess.sandbox_generation),
         "sandbox_days_elapsed": sandbox_days_elapsed(sess),
         "sandbox_min_remaining_days": sandbox_min_remaining_days(sess),
+        "sandbox_auto_resume": bool(getattr(sess, "sandbox_auto_resume", False)),
+        "sandbox_auto_resume_day": getattr(sess, "sandbox_auto_resume_day", None),
         "bulletin_tail_zh": lines[-14:],
         "management_pending_queue_tags": list(pend),
         "sandbox_npc_quota": {
@@ -218,10 +283,38 @@ def _sandbox_state_block(sess: GameSession) -> dict[str, Any]:
 
 def _narrative_block(sess: GameSession) -> dict[str, Any]:
     n = sess.current_node()
-    choices = [{"id": c.id, "label_zh": c.label_zh} for c in (n.choices or [])]
-    fin_endings: list[dict[str, str]] | None = None
+    choices = [{"id": c.id, "label_zh": c.label_zh} for c in sess.get_active_choices()]
+    fin_endings: list[dict[str, Any]] | None = None
     if n.id == "FIN-02":
-        fin_endings = [{"id": cid, "label_zh": lab} for cid, lab in sess.fin02_choices()]
+        fin_endings = sess.fin02_choices()
+    fin03_epilogue: dict[str, Any] | None = None
+    if n.id == "FIN-03":
+        from .endings import ENDING_CATALOG, EndingSpec
+        # FIN-03 需展示所选结局的后日谈
+        last_ending = getattr(sess, "_last_ending_id", None) or None
+        found: EndingSpec | None = None
+        if last_ending:
+            for e in ENDING_CATALOG:
+                if e.id == last_ending:
+                    found = e
+                    break
+        if found is None and sess.completed_nodes and "FIN-02" in sess.completed_nodes:
+            # 兜底：从可用结局中取第一个
+            ends = sess.fin02_choices()
+            last_ending = ends[0]["ending_id"] if ends else None
+            if last_ending:
+                for e in ENDING_CATALOG:
+                    if e.id == last_ending:
+                        found = e
+                        break
+        if found:
+            fin03_epilogue = {
+                "ending_id": found.id,
+                "title_zh": found.title_zh,
+                "description_zh": found.description_zh,
+                "epilogue_zh": found.epilogue_zh,
+                "tone_zh": found.tone_zh,
+            }
     hints: dict[str, Any] = {}
     for fid in (
         "helipad",
@@ -264,15 +357,17 @@ def _narrative_block(sess: GameSession) -> dict[str, Any]:
         "act": n.act,
         "chapter": n.chapter,
         "kind": n.kind,
-        "objectives_player_zh": prepend_sandbox_objectives_banner(sess.story_phase, player_visible_objectives(n)),
+        "objectives_player_zh": prepend_sandbox_objectives_banner(sess.story_phase, player_visible_objectives(n), sess),
         "objectives_upcoming_blurb_zh": objectives_upcoming_blurb(sess),
         "npc_focus": n.npc_focus,
         "choices": choices,
         "fin_endings": fin_endings,
+        "fin03_epilogue": fin03_epilogue,
         "can_advance_default": sess.advance_default_allowed(),
         "advance_blocked_reason_zh": sess.advance_default_blocked_reason_zh(),
         "story_navigation_blocked_zh": sess.story_navigation_blocked_reason_zh(),
         "memory_flash_lines_zh": list(n.memory_flash_lines_zh or []),
+        "pre_dialogue": n.pre_dialogue,
         "facility_hints": hints,
         "sandbox": _sandbox_state_block(sess),
     }
@@ -316,6 +411,8 @@ def _state_payload(sess: GameSession) -> dict[str, Any]:
         "activity_cooldowns": dict(sess.activity_cooldowns),
         "dispatch": dispatch_payload,
         "facility_sim_overlays": facility_sim_overlays_snapshot(sess),
+        "west_shaft_sim": build_workshop_snapshot(sess),
+        "underground_workshop": build_workshop_snapshot(sess),
         "world_clock": clock_display_parts(sess),
     }
 
@@ -358,7 +455,7 @@ def _send_json(handler: BaseHTTPRequestHandler, status: int, obj: Any) -> None:
 
 def _player_context_for_npc(sess: GameSession, npc_id: str, extra: str | None = None) -> str:
     n = sess.current_node()
-    bullets = "\n".join(f"- {t}" for t in n.must_deliver_zh)
+    bullets = "\n".join(f"- {t}" for t in sess.get_active_must_deliver_zh())
     base = (
         f"当前关键节点：{n.id}《{n.title_zh}》。\n"
         f"必达信息（须在语气中落实或呼应，勿直接照念清单）：\n{bullets}\n"
@@ -462,11 +559,27 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                     self,
                     200,
                     {
-                        "get": ["/", "/api/state", "/api/health", "/api/ping", "/api/build", "/api/routes"],
+                        "get": ["/", "/api/state", "/api/health", "/api/ping", "/api/build", "/api/routes"
+                                ] + (list(DEBUG_GET_ROUTES) if _debug_api_enabled() else []),
                         "post": _post_routes_all(),
                         "debug_api_enabled": _debug_api_enabled(),
                     },
                 )
+            elif path == "/api/debug/story_graph":
+                if not _debug_api_enabled():
+                    _send_json(self, 403, {"ok": False, "error": "debug_disabled"})
+                else:
+                    g = sess.graph()
+                    nodes_out: list[dict[str, Any]] = []
+                    for nid, ns in sorted(g.items()):
+                        nodes_out.append({
+                            "node_id": nid,
+                            "title_zh": ns.title_zh,
+                            "act": ns.act,
+                            "chapter": ns.chapter,
+                            "kind": ns.kind,
+                        })
+                    _send_json(self, 200, {"ok": True, "current_node_id": sess.current_node_id, "nodes": nodes_out})
             elif path == "/api/npc/opening":
                 _send_json(
                     self,
@@ -798,6 +911,170 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                             sess.sandbox_npc_calls_this_day = int(sess.sandbox_npc_calls_this_day) + 1
                         _send_json(self, 200, {"ok": True, "text": text, **_state_payload(sess)})
                     return
+                elif path == "/api/npc/chat":
+                    npc_id = str(body.get("npc_id") or "")
+                    player_text = str(body.get("player_text") or "").strip()
+                    action = str(body.get("action") or "send").strip()  # send | start | end
+                    if not npc_id:
+                        _send_json(self, 400, {"error": "missing_npc_id"})
+                        return
+                    if action == "end":
+                        with session_lock():
+                            end_conversation(sess)
+                            _send_json(self, 200, {"ok": True, "conversation_ended": True, **_state_payload(sess)})
+                        return
+                    if not player_text and action != "start":
+                        _send_json(self, 400, {"error": "missing_player_text"})
+                        return
+                    with session_lock():
+                        # 检查该 NPC 是否已主动结束对话（不允许再次发起）
+                        if action == "start":
+                            can_start, block_reason = can_start_conversation_with(sess, npc_id)
+                            if not can_start:
+                                _send_json(
+                                    self,
+                                    200,
+                                    {
+                                        "ok": True,
+                                        "conversation_blocked": True,
+                                        "reason_zh": block_reason,
+                                        **_state_payload(sess),
+                                    },
+                                )
+                                return
+
+                        # 检查静默期配额
+                        if (
+                            sess.story_phase.strip() == "Sandbox"
+                            and int(sess.sandbox_npc_calls_this_day) >= SANDBOX_NPC_CALLS_SOFT_CAP_DAY
+                        ):
+                            _send_json(
+                                self,
+                                400,
+                                {
+                                    "ok": False,
+                                    "error": "sandbox_npc_quota_exceeded",
+                                    "reason_zh": (
+                                        f"本基地日静默交流配额已用尽（{SANDBOX_NPC_CALLS_SOFT_CAP_DAY} 次）；"
+                                        "推进一天或结束静默再继续。"
+                                    ),
+                                    **_state_payload(sess),
+                                },
+                            )
+                            return
+
+                        # 初始化或恢复对话
+                        current_conv_npc = sess.active_conversation_npc
+                        if action == "start" or (current_conv_npc and current_conv_npc != npc_id):
+                            start_conversation(sess, npc_id)
+                        elif not current_conv_npc:
+                            start_conversation(sess, npc_id)
+
+                        # 记录玩家输入
+                        sess.conversation_history.append({
+                            "role": "player",
+                            "text": player_text,
+                        })
+
+                        # 获取剧情上下文
+                        node = sess.current_node()
+                        choice_labels = narrative_chat_choice_labels(sess)
+
+                        # 调用 AI
+                        agent = npc_agent_for(sess, npc_id)
+                        sim = build_simulation_snapshot(sess)
+                        soft_limit, hard_limit = get_conversation_turn_limits(sess)
+                        result = agent.chat_turn(
+                            player_text=player_text if player_text else "（玩家走近，等待回应）",
+                            conversation_history=sess.conversation_history[:-1],  # 不包括刚加的这一条
+                            choice_labels=choice_labels,
+                            node_id=node.id,
+                            node_title_zh=node.title_zh,
+                            must_deliver_zh=sess.get_active_must_deliver_zh(),
+                            sim=sim,
+                            turn_number=sess.conversation_turn_count + 1,  # 即将进行的轮次
+                            soft_limit=soft_limit,
+                            hard_limit=hard_limit,
+                        )
+
+                        # 记录 NPC 回复
+                        sess.conversation_history.append({
+                            "role": "npc",
+                            "text": result.npc_text,
+                        })
+                        sess.conversation_turn_count += 1
+
+                        # 是否为对话的第一轮（action: "start" 触发的初始回话）
+                        is_first_turn = (sess.conversation_turn_count == 1)
+
+                        # ── 处理话题状态 ──
+                        topic_status = result.topic_status
+                        conversation_closed = False
+                        if topic_status == "off_topic":
+                            if not is_first_turn:
+                                sess.conversation_off_topic_count += 1
+                        elif topic_status == "on_topic":
+                            # 重回正题 → 重置偏离计数
+                            if sess.conversation_off_topic_count > 0:
+                                sess.conversation_off_topic_count = max(0, sess.conversation_off_topic_count - 1)
+                        elif topic_status == "resolved":
+                            # NPC 明确表达了结束对话的意图 —— 但不允许在第一轮就结束
+                            if not is_first_turn:
+                                conversation_closed = True
+
+                        # ── close_signal：AI 内部判断对话该结束了（不依赖台词中的告别语）──
+                        if result.close_signal and not conversation_closed and not is_first_turn:
+                            conversation_closed = True
+
+                        # 应用情绪变化
+                        emotional_applied = {}
+                        if result.emotional_shift:
+                            emotional_applied = apply_chat_emotional_shift(sess, npc_id, result.emotional_shift)
+
+                        # 记录到 NPC 记忆
+                        st = sess.get_memory_store(npc_id)
+                        summary = f"[自由对话 #{sess.conversation_turn_count}] {player_text[:200]}"
+                        st.record_turn(InteractionTurn("player", summary))
+                        st.record_turn(InteractionTurn("npc", result.npc_text[:600]))
+                        sess.save_memory_store(st)
+
+                        if sess.story_phase.strip() == "Sandbox":
+                            sess.sandbox_npc_calls_this_day = int(sess.sandbox_npc_calls_this_day) + 1
+
+                        # ── 选项浮现信号 ──
+                        # 到达浮现阈值时，告知前端可以显示剧情选项
+                        unveil_choices = (
+                            sess.conversation_turn_count >= CHOICE_UNVEIL_TURNS
+                            and not result.story_resolved
+                            and bool(choice_labels)
+                        )
+
+                        # ── 如果 AI 已自然收束到选项，或 NPC 主动结束对话，清理对话状态 ──
+                        if result.story_resolved:
+                            end_conversation(sess)
+                        elif conversation_closed:
+                            # NPC 主动结束对话（不通过选项），标记为不可再发起
+                            end_conversation(sess, closed_by_npc=True)
+
+                        response_body: dict[str, Any] = {
+                            "ok": True,
+                            "npc_text": result.npc_text,
+                            "topic_status": topic_status,
+                            "off_topic_count": sess.conversation_off_topic_count,
+                            "turn_count": sess.conversation_turn_count,
+                            "emotional_shift": result.emotional_shift,
+                            "emotional_applied": emotional_applied,
+                            "redirection_hint": result.redirection_hint,
+                            "story_resolved": result.story_resolved,
+                            "suggested_choices": result.suggested_choices,
+                            "close_signal": result.close_signal,
+                            "conversation_npc": npc_id,
+                            "unveil_choices": unveil_choices,
+                            "conversation_closed": conversation_closed,
+                            **_state_payload(sess),
+                        }
+                        _send_json(self, 200, response_body)
+                    return
                 elif path == "/api/management":
                     tag = str(body.get("tag") or "")
                     if not tag:
@@ -868,7 +1145,7 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                         sess.sandbox_ops_unlocked = True
                         sess.sandbox_generation = int(sess.sandbox_generation) + 1
                         sess.sandbox_enter_world_day = int(sess.world_day)
-                        append_bulletin_zh(sess, f"静默运营 #{sess.sandbox_generation} 开始——基地时钟：第 {sess.world_day} 日。")
+                        append_bulletin_zh(sess, f"基地进入静默运营节律——第 {sess.world_day} 日。")
                         _send_json(self, 200, {"ok": True, **_state_payload(sess)})
                     return
                 elif path == "/api/sim/exit_sandbox":
@@ -893,6 +1170,8 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                         sess.story_phase = "StoryBeat"
                         sess.sandbox_enter_world_day = None
                         sess.sandbox_min_world_days = None
+                        sess.sandbox_auto_resume = False
+                        sess.sandbox_auto_resume_day = None
                         if drained:
                             append_bulletin_zh(sess, f"静默结束：决算队列落地 {len(drained)} 项。")
                         else:
@@ -983,7 +1262,7 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                     src = SourceAgent()
                     s = source_session_from(sess)
                     n = sess.current_node()
-                    scene = source_whisper_scene_zh(n.id, n.title_zh, n.must_deliver_zh)
+                    scene = source_whisper_scene_zh(n.id, n.title_zh, sess.get_active_must_deliver_zh())
                     extra = body.get("extra_world")
                     merged = f"{scene}\n{extra}" if extra else scene
                     ans = src.whisper(question=q, session=s, extra_world=merged)
@@ -991,7 +1270,9 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                     _send_json(self, 200, {"ok": True, "text": ans, **_state_payload(sess)})
                 elif path == "/api/session/reset":
                     with session_lock():
-                        set_sess(GameSession())
+                        fresh = GameSession()
+                        _attach_autosave(fresh)
+                        set_sess(fresh)
                         _send_json(self, 200, {"ok": True, **_state_payload(get_sess())})
                     return
                 elif path == "/api/session/load":
@@ -1000,23 +1281,22 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                         _send_json(self, 400, {"error": "missing_session_object"})
                         return
                     with session_lock():
-                        set_sess(GameSession.from_json(raw))
+                        loaded = GameSession.from_json(raw)
+                        _attach_autosave(loaded)
+                        set_sess(loaded)
                         _send_json(self, 200, {"ok": True, **_state_payload(get_sess())})
                     return
                 elif path == "/api/session/delete":
-                    save_path = _get_save_file_path()
-                    existed = save_path.exists()
                     with session_lock():
-                        if existed:
-                            save_path.unlink()
-                        set_sess(GameSession())
+                        fresh = GameSession()
+                        _attach_autosave(fresh)
+                        set_sess(fresh)
                         _send_json(
                             self,
                             200,
                             {
                                 "ok": True,
-                                "deleted": existed,
-                                "save_path": str(save_path),
+                                "deleted": True,
                                 **_state_payload(get_sess()),
                             },
                         )
@@ -1185,6 +1465,234 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
                             },
                         )
                     return
+
+                elif path in ("/api/sim/workshop/enter", "/api/sim/west_shaft/enter"):
+                    with session_lock():
+                        workshop_discover_blueprint(sess)
+                        workshop_entry_pass(sess)
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/leave":
+                    with session_lock():
+                        workshop_leave(sess)
+                        _send_json(self, 200, {"ok": True, **_state_payload(sess)})
+                    return
+                elif path == "/api/sim/workshop/construct":
+                    with session_lock():
+                        ok_c, cerr = construct_workshop(sess)
+                        if not ok_c:
+                            _send_json(
+                                self,
+                                400,
+                                {
+                                    "ok": False,
+                                    "error": "workshop_construct_blocked",
+                                    "reason_zh": cerr or "",
+                                    **_state_payload(sess),
+                                },
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/build":
+                    x = int(body.get("x", -1))
+                    y = int(body.get("y", -1))
+                    dtype = str(body.get("device_type") or "").strip()
+                    with session_lock():
+                        ok_b, berr = workshop_build_device(sess, x, y, dtype)
+                        if not ok_b:
+                            _send_json(
+                                self,
+                                400,
+                                {
+                                    "ok": False,
+                                    "error": "workshop_build_blocked",
+                                    "reason_zh": berr or "",
+                                    **_state_payload(sess),
+                                },
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/upgrade":
+                    x, y = int(body.get("x", -1)), int(body.get("y", -1))
+                    with session_lock():
+                        ok_u, uerr = workshop_upgrade_device(sess, x, y)
+                        if not ok_u:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_upgrade_blocked", "reason_zh": uerr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/demolish":
+                    x, y = int(body.get("x", -1)), int(body.get("y", -1))
+                    with session_lock():
+                        ok_d, derr = workshop_demolish_device(sess, x, y)
+                        if not ok_d:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_demolish_blocked", "reason_zh": derr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/move":
+                    from_x = int(body.get("from_x", body.get("x", -1)))
+                    from_y = int(body.get("from_y", body.get("y", -1)))
+                    to_x = int(body.get("to_x", -1))
+                    to_y = int(body.get("to_y", -1))
+                    with session_lock():
+                        ok_m, merr = workshop_move_device(sess, from_x, from_y, to_x, to_y)
+                        if not ok_m:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_move_blocked", "reason_zh": merr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/toggle":
+                    x, y = int(body.get("x", -1)), int(body.get("y", -1))
+                    with session_lock():
+                        ok_t, terr = workshop_toggle_device(sess, x, y)
+                        if not ok_t:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_toggle_blocked", "reason_zh": terr or "", **_state_payload(sess),
+                                },
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/assign_npc":
+                    x, y = int(body.get("x", -1)), int(body.get("y", -1))
+                    npc_id = str(body.get("npc_id") or "").strip()
+                    with session_lock():
+                        ok_a, aerr = workshop_assign_npc(sess, x, y, npc_id)
+                        if not ok_a:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_assign_blocked", "reason_zh": aerr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/set_recipe":
+                    x, y = int(body.get("x", -1)), int(body.get("y", -1))
+                    recipe = str(body.get("recipe") or "default").strip()
+                    with session_lock():
+                        ok_r, rerr = workshop_set_device_recipe(sess, x, y, recipe)
+                        if not ok_r:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_recipe_blocked", "reason_zh": rerr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/delegate":
+                    enabled = bool(body.get("enabled", False))
+                    with session_lock():
+                        workshop_set_delegation(sess, enabled)
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/set_caps":
+                    caps = body.get("caps")
+                    enabled = body.get("enabled")
+                    with session_lock():
+                        workshop_set_production_caps(
+                            sess,
+                            caps if isinstance(caps, dict) else None,
+                            enabled if "enabled" in body else None,
+                        )
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/import_source_ore":
+                    amount = int(body.get("amount", 1) or 1)
+                    with session_lock():
+                        ok_i, ierr = workshop_import_source_ore(sess, amount)
+                        if not ok_i:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_import_blocked", "reason_zh": ierr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/export":
+                    resource = str(body.get("resource") or "").strip()
+                    amount = int(body.get("amount", 1) or 1)
+                    with session_lock():
+                        ok_e, eerr, exp = workshop_export_to_base(sess, resource, amount)
+                        if not ok_e:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_export_blocked", "reason_zh": eerr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, {**_workshop_api_payload(sess), "export_result": exp})
+                    return
+                elif path == "/api/sim/workshop/deliver_task":
+                    task_id = str(body.get("task_id") or "").strip()
+                    with session_lock():
+                        ok_dt, dterr, delivery = workshop_deliver_task(sess, task_id)
+                        if not ok_dt:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_task_blocked", "reason_zh": dterr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, {**_workshop_api_payload(sess), "delivery_result": delivery})
+                    return
+                elif path == "/api/sim/workshop/trade":
+                    trade_id = str(body.get("trade_id") or "").strip()
+                    with session_lock():
+                        ok_tr, terr, payout = workshop_execute_trade(sess, trade_id)
+                        if not ok_tr:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_trade_blocked", "reason_zh": terr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, {**_workshop_api_payload(sess), "trade_result": payout})
+                    return
+                elif path == "/api/sim/workshop/rest_npc":
+                    npc_id = str(body.get("npc_id") or "").strip()
+                    with session_lock():
+                        ok_r, rerr = workshop_rest_npc(sess, npc_id)
+                        if not ok_r:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_rest_blocked", "reason_zh": rerr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
+                elif path == "/api/sim/workshop/rehabilitate":
+                    with session_lock():
+                        ok_rb, rberr = rehabilitate_workshop(sess)
+                        if not ok_rb:
+                            _send_json(
+                                self,
+                                400,
+                                {"ok": False, "error": "workshop_rehab_blocked", "reason_zh": rberr or "", **_state_payload(sess)},
+                            )
+                            return
+                        _send_json(self, 200, _workshop_api_payload(sess))
+                    return
                 elif path == "/api/sim/dispatch/start":
                     """开始委任NPC代管基地"""
                     npc_id = str(body.get("npc_id") or "").strip()
@@ -1307,6 +1815,7 @@ class GameAPIServer(ThreadingHTTPServer):
 def run_server(host: str | None = None, port: int | None = None) -> None:
     h = host or os.environ.get("GAME_API_HOST", "127.0.0.1")
     p = int(port or os.environ.get("GAME_API_PORT", "8787"))
+    # 存档已迁移至前端 localStorage，后端启动时始终使用全新会话
     Handler = make_handler(get_session, set_session)
     httpd = GameAPIServer((h, p), Handler)
     api_src = Path(__file__).resolve()

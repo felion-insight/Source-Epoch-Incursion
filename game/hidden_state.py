@@ -55,6 +55,7 @@ class BaseResources:
     food: int = 70
     medical: int = 40
     intel: int = 10
+    parts: int = 20
 
     def apply(self, **deltas: int) -> None:
         for k, v in deltas.items():
@@ -62,7 +63,13 @@ class BaseResources:
             setattr(self, k, max(0, cur + int(v)))
 
     def as_dict(self) -> dict[str, int]:
-        return {"energy": self.energy, "food": self.food, "medical": self.medical, "intel": self.intel}
+        return {
+            "energy": self.energy,
+            "food": self.food,
+            "medical": self.medical,
+            "intel": self.intel,
+            "parts": self.parts,
+        }
 
 
 @dataclass

@@ -1,0 +1,42 @@
+# ============================================================
+# Source Epoch Incursion - .gitignore
+# 源纪元 · 岸线侵入
+# ============================================================
+
+# ── Python 编译缓存 ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+*.egg
+
+# ── 本地配置 & 密钥（绝对不能提交） ──────────────────────────
+.env
+.env.*
+narrative_ai/user_settings.py
+tools/.env
+
+# ── 存档文件 ─────────────────────────────────────────────────
+save/
+savegame.json
+*.save
+
+# ── IDE / 编辑器 ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.cursor/
+.codebuddy/
+
+# ── OS 系统文件 ──────────────────────────────────────────────
+desktop.ini
+
+# ── 生成资产源文件（最终资产在 web/explorer/assets/） ────────
+assets/icons_generated/
+assets/facilities_generated/
+assets/portraits_generated/
+assets/map_tiles_generated/

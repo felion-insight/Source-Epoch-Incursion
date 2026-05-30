@@ -1,0 +1,496 @@
+{
+  "$schema": "prompt_blocks_schema",
+  "description": "将 prompt_blocks.py 中所有函数的提示词模板结构化为 JSON。每一条记录对应一个 Python 函数，区分静态模板文本与动态数据注入点。",
+  "blocks": {
+    "world_header_block": {
+      "function": "world_header_block",
+      "description": "构建世界观页眉提示块，可选注入当前剧情允许提及的阴谋层次。",
+      "parameters": [
+        {
+          "name": "max_tier_inject",
+          "type": "int | None",
+          "required": false,
+          "description": "当前允许暴露的最高阴谋层数；若不传则不输出阴谋层次列表"
+        }
+      ],
+      "sections": [
+        {
+          "id": "world_info",
+          "condition": "always",
+          "template": "作品：{title}\n年代：{year_label}\n世界观基调：{global_tone}\n玩家设定：{premise_player}\n表层冲突：{surface_conflict}",
+          "data_source": "load_world() → w",
+          "fields": {
+            "title": "w.get('title', '')",
+            "year_label": "w.get('year_label', '')",
+            "global_tone": "w.get('global_tone', '')",
+            "premise_player": "w.get('premise_player', '')",
+            "surface_conflict": "w.get('surface_conflict', '')"
+          }
+        },
+        {
+          "id": "conspiracy_tiers",
+          "condition": "max_tier_inject is not None and tiers non-empty",
+          "header_template": "当前剧情允许提及的阴谋层次（不得超过此深度的具体设定）：",
+          "item_template": "  Tier{tier_n}：{player_facing}",
+          "data_source": "w.get('conspiracy_tiers') → tiers[]",
+          "fields": {
+            "tier_n": "int(t.get('tier', 0))",
+            "player_facing": "t.get('player_facing', '')"
+          },
+          "filter": "tier_n <= max_tier_inject"
+        }
+      ],
+      "output_join": "\n"
+    },
+
+    "npc_sheet_block": {
+      "function": "npc_sheet_block",
+      "description": "构建单个 NPC 角色卡提示块，包含身份、记忆、特质、约束与社交关系。",
+      "parameters": [
+        {
+          "name": "npc_id",
+          "type": "str",
+          "required": true,
+          "description": "NPC 的唯一标识符，用于从数据中加载角色信息"
+        }
+      ],
+      "sections": [
+        {
+          "id": "header",
+          "template": "角色：{display_name} / {display_name_en}"
+        },
+        {
+          "id": "surface_role",
+          "template": "表面身份：{role_surface}"
+        },
+        {
+          "id": "hidden_role",
+          "template": "隐藏身份（对你保密，勿主动剧透给玩家）：{role_hidden}"
+        },
+        {
+          "id": "core_memories",
+          "template": "核心记忆：\n{core_memories_lines}",
+          "item_template": "  - {memory}",
+          "list_source": "n.get('core_memories') or []"
+        },
+        {
+          "id": "traits",
+          "template": "特质：{traits_csv}",
+          "list_join": ", ",
+          "list_source": "n.get('traits') or []"
+        },
+        {
+          "id": "speech_style",
+          "template": "语言风格：{speech_style}"
+        },
+        {
+          "id": "ai_constraints",
+          "template": "台词约束：\n{constraints_lines}",
+          "item_template": "  - {constraint}",
+          "list_source": "n.get('ai_constraints') or []"
+        },
+        {
+          "id": "turn_condition",
+          "template": "转折条件摘要：{turn_condition}"
+        },
+        {
+          "id": "social_links",
+          "template": "社交关联：{social_links}",
+          "default": "（无）",
+          "list_join": ", ",
+          "list_source": "n.get('social_links') or []"
+        },
+        {
+          "id": "core_beliefs",
+          "template": "不可违背的核心信念：\n{beliefs_lines}",
+          "item_template": "  - {belief}",
+          "list_source": "n.get('core_beliefs') or []"
+        },
+        {
+          "id": "memory_rule",
+          "template": "记忆规则：{memory_rule_ref}"
+        }
+      ],
+      "data_source": "get_npc(npc_id) → n",
+      "output_join": "\n"
+    },
+
+    "memory_block": {
+      "function": "memory_block",
+      "description": "构建 NPC 记忆与状态提示块，包含长期/短期记忆、社交传闻、剧情标记、情感数值与可选模拟快照。",
+      "parameters": [
+        {
+          "name": "store",
+          "type": "NpcMemoryStore",
+          "required": true,
+          "description": "NPC 记忆存储对象"
+        },
+        {
+          "name": "sim",
+          "type": "SimulationSnapshot | None",
+          "required": false,
+          "description": "模拟快照（资源、决策、侵入进度、隐藏变量等）"
+        }
+      ],
+      "sections": [
+        {
+          "id": "long_term_notes",
+          "condition": "store.long_term_notes is non-empty",
+          "header_template": "设计者补充的长期记忆：",
+          "item_template": "  - {note}",
+          "data_source": "store.long_term_notes"
+        },
+        {
+          "id": "short_term_interactions",
+          "condition": "store.short_term_lines() is non-empty",
+          "template": "与玩家的近期交互摘要（须在台词中自然地呼应至少一处，除非角色刻意装傻）：\n{short_term_lines}",
+          "data_source": "store.short_term_lines()"
+        },
+        {
+          "id": "short_term_empty",
+          "condition": "store.short_term_lines() is empty",
+          "template": "与玩家的近期交互摘要：（尚无）"
+        },
+        {
+          "id": "social_rumors",
+          "condition": "store.social_rumors is non-empty",
+          "header_template": "社交传闻（其他角色对玩家的说法）：",
+          "item_template": "  - {rumor}",
+          "data_source": "store.social_rumors"
+        },
+        {
+          "id": "plot_flags",
+          "condition": "store.plot_flags is non-empty",
+          "header_template": "已发生的剧情标记：",
+          "data_source": "sorted(store.plot_flags)",
+          "item_template": "{flag}"
+        },
+        {
+          "id": "emotional_values",
+          "condition": "always",
+          "template": "情感数值（仅作语气参考）：\n  信任={trust:.0f} 好感={affinity:.0f} 恐惧={fear:.0f}\n  {trust_instruction}",
+          "data_source": "store.emotional + trust_instructions()",
+          "fields": {
+            "trust": "store.emotional.trust",
+            "affinity": "store.emotional.affinity",
+            "fear": "store.emotional.fear",
+            "trust_instruction": "trust_instructions(store.emotional.trust)"
+          }
+        },
+        {
+          "id": "sim_resources",
+          "condition": "sim is not None and sim.resources is non-empty",
+          "template": "基地资源快照：\n{resources_json}",
+          "data_source": "json.dumps(sim.resources, ensure_ascii=False)"
+        },
+        {
+          "id": "sim_last_decision",
+          "condition": "sim is not None and sim.last_decision_tag exists",
+          "template": "最近一次经营决策：{last_decision_label}",
+          "data_source": "sim.last_decision_label_zh or sim.last_decision_tag"
+        },
+        {
+          "id": "sim_shoreline",
+          "condition": "sim is not None and sim.shoreline_intrusion_percent is not None",
+          "template": "岸线侵入进度感：约 {shoreline_intrusion_percent:.0f}%",
+          "data_source": "sim.shoreline_intrusion_percent"
+        },
+        {
+          "id": "sim_hidden_vars",
+          "condition": "sim is not None and sim.hidden_vars is non-empty",
+          "template": "玩家隐藏变量快照（对白语气参考，勿向玩家逐项念名单）：\n{hidden_vars_json}",
+          "data_source": "json.dumps(sim.hidden_vars, ensure_ascii=False)"
+        }
+      ],
+      "output_join": "\n\n"
+    },
+
+    "spoiler_guard_block": {
+      "function": "spoiler_guard_block",
+      "description": "构建防剧透守卫提示块，根据已解锁阴谋层数限制 NPC 可透露的信息。",
+      "parameters": [
+        {
+          "name": "store",
+          "type": "NpcMemoryStore",
+          "required": true,
+          "description": "NPC 记忆存储对象，从中读取 conspiracy_tier_unlocked"
+        }
+      ],
+      "sections": [
+        {
+          "id": "spoiler_rule",
+          "condition": "always",
+          "template": "已解锁阴谋层数上限：{conspiracy_tier_unlocked}。不得主动说出高于该层的核心设定；必要时用含糊、省略或岔开话题。自定义提问若在能力外，用「我不想谈这个」「现在不是时候」类回应，不编造关键线索。",
+          "data_source": "store.conspiracy_tier_unlocked"
+        }
+      ],
+      "output_join": ""
+    },
+
+    "story_beat_system_zh": {
+      "function": "story_beat_system_zh",
+      "description": "生成剧情节拍系统约束提示，锁定本场必须落实的剧情事实。",
+      "parameters": [
+        {
+          "name": "node_id",
+          "type": "str",
+          "required": true,
+          "description": "剧情节点 ID"
+        },
+        {
+          "name": "title_zh",
+          "type": "str",
+          "required": true,
+          "description": "节点中文标题"
+        },
+        {
+          "name": "must_deliver_zh",
+          "type": "list[str]",
+          "required": true,
+          "description": "本场必须落实的剧情事实条目列表"
+        }
+      ],
+      "sections": [
+        {
+          "id": "empty_deliver",
+          "condition": "must_deliver_zh is empty",
+          "template": "【本场剧情节拍】节点 {node_id}《{title_zh}》。无额外必达事实条目。"
+        },
+        {
+          "id": "has_deliver",
+          "condition": "must_deliver_zh is non-empty",
+          "template": "【本场剧情节拍｜系统约束】节点 {node_id}《{title_zh}》。\n下列信息须在本轮台词中自然落实或呼应（勿逐条照念，勿扩写未解锁阴谋层）：\n{bullets}",
+          "item_template": "- {item}"
+        }
+      ],
+      "output_join": ""
+    },
+
+    "npc_chat_system_zh": {
+      "function": "npc_chat_system_zh",
+      "description": "自由文本对话模式的完整系统提示：定义话题边界、偏离检测规则、自然结束规则、情绪后果与 JSON 输出格式。",
+      "parameters": [
+        {
+          "name": "node_id",
+          "type": "str",
+          "required": true,
+          "description": "当前剧情节拍节点 ID"
+        },
+        {
+          "name": "title_zh",
+          "type": "str",
+          "required": true,
+          "description": "节点中文标题"
+        },
+        {
+          "name": "must_deliver_zh",
+          "type": "list[str]",
+          "required": true,
+          "description": "本场必须落实的核心信息点列表"
+        },
+        {
+          "name": "choices_zh",
+          "type": "list[str] | None",
+          "required": false,
+          "description": "可选的对话选项列表，用于选项自然收束"
+        },
+        {
+          "name": "turn_number",
+          "type": "int",
+          "required": false,
+          "default": 0,
+          "description": "当前对话轮数"
+        },
+        {
+          "name": "soft_limit",
+          "type": "int",
+          "required": false,
+          "default": 6,
+          "description": "到达此轮数后开始温和引导收束"
+        },
+        {
+          "name": "hard_limit",
+          "type": "int",
+          "required": false,
+          "default": 9,
+          "description": "到达此轮数后强制要求结束对话"
+        }
+      ],
+      "sections": [
+        {
+          "id": "topic_bounds_header",
+          "condition": "always",
+          "template": "【自由对话模式｜话题约束】"
+        },
+        {
+          "id": "topic_bounds_context",
+          "condition": "always",
+          "template": "当前剧情节拍：{node_id}《{title_zh}》。对话已进行 {turn_number} 轮（温和引导从第 {soft_limit} 轮开始，强制结束在第 {hard_limit} 轮）。"
+        },
+        {
+          "id": "first_turn_guidance",
+          "condition": "turn_number <= 1",
+          "template": "这是对话的第一轮——玩家刚刚走近你，准备开始交谈。此时「（玩家走近，等待回应）」是玩家进场信号，不是无话可说。你需要用角色口吻自然地开场，回应玩家的到来，引出当前剧情话题。本轮严禁设置 close_signal 为 true，严禁设置 topic_status 为 \"resolved\"。"
+        },
+        {
+          "id": "must_deliver_reminder",
+          "condition": "must_deliver_zh is non-empty",
+          "header_template": "本场必须自然落实/回应的核心信息点：",
+          "item_template": "  - {item}",
+          "data_source": "must_deliver_zh"
+        },
+        {
+          "id": "topic_scope",
+          "condition": "always",
+          "template": "话题允许范围：与当前剧情节点直接相关的内容、基地态势、角色关系、玩家身份与职责。话题偏离认定：玩家若多次谈论与上述范围完全无关的事（如闲聊天气、问外面世界、讨论现代科技、问其他游戏），即视为偏离。"
+        },
+        {
+          "id": "natural_end_header",
+          "condition": "always",
+          "template": ""
+        },
+        {
+          "id": "natural_end_title",
+          "condition": "always",
+          "template": "【对话自然结束规则｜极高优先级】"
+        },
+        {
+          "id": "natural_end_resolved",
+          "condition": "always",
+          "template": "以下情况必须立即将 topic_status 设置为 \"resolved\"：\n1. 玩家明确表达了告别/再见/离开的意图（如「再见」「拜拜」「我走了」「先走了」「不打扰你了」「你去忙吧」「该回去了」「下次再聊」等），并且你也用角色口吻回应了告别。\n2. 你主动表达了结束对话的意图，且玩家没有追问新话题。\n3. 玩家表示对话目的已经达成（如「好的我明白了」「谢谢你告诉我这些」「我知道该怎么做了」），并且没有继续提问的迹象。\n注意：使用 \"resolved\" 后对话窗口会自动关闭，这是一个自然且正面的结束方式。在角色说完告别语后，再用一句简短的话收尾（如角色特有的告别方式），然后设置 topic_status 为 \"resolved\"。"
+        },
+        {
+          "id": "natural_end_close_signal",
+          "condition": "always",
+          "template": "以下情况应将 close_signal 设置为 true：\n1. 你觉得这段对话的目的已经达成，继续聊下去不会有更多推进。\n2. 玩家明显不知道该说什么、只是在无意义地拖延。\n3. 玩家反复说同一件事，对话在原地打转。\n即使 close_signal 为 true，你仍然需要输出自然的 npc_text 台词。"
+        },
+        {
+          "id": "deviation_header",
+          "condition": "always",
+          "template": ""
+        },
+        {
+          "id": "deviation_title",
+          "condition": "always",
+          "template": "【偏离纠正与情绪规则】"
+        },
+        {
+          "id": "deviation_first",
+          "condition": "always",
+          "template": "1. 首次偏离：用角色口吻温和提示\"这件事可以之后再聊\"或\"现在先处理眼前的事\"，并将话题引回当前剧情。"
+        },
+        {
+          "id": "deviation_second",
+          "condition": "always",
+          "template": "2. 二次偏离：语气变得冷淡或无奈，台词缩短；用\"听着，我们的处境不乐观\"或\"集中精神\"类回应。"
+        },
+        {
+          "id": "deviation_third_plus",
+          "condition": "always",
+          "template": "3. 三次及以上频繁偏离：角色表现出明显不耐烦/失望，输出 emotional_shift 中包含 -3~-8 的 trust 下降与 -2~-5 的 affinity 下降。台词可带一句（叹气）（揉了揉眉心）等动作括号。"
+        },
+        {
+          "id": "deviation_correct_response",
+          "condition": "always",
+          "template": "4. 正确回应剧情话题时：给予正常的沉浸式对话推进，情绪稳定或略升。"
+        },
+        {
+          "id": "choices_title",
+          "condition": "choices_zh is non-empty",
+          "template": ""
+        },
+        {
+          "id": "choices_natural_convergence_title",
+          "condition": "choices_zh is non-empty",
+          "template": "【选项自然收束】"
+        },
+        {
+          "id": "choices_story_resolved_rule",
+          "condition": "choices_zh is non-empty",
+          "template": "当玩家的表述与以下方向之一足够接近时，设置 story_resolved 为对应 choice_id："
+        },
+        {
+          "id": "choices_list",
+          "condition": "choices_zh is non-empty",
+          "item_template": "  - {choice}",
+          "data_source": "choices_zh"
+        },
+        {
+          "id": "choices_note",
+          "condition": "choices_zh is non-empty",
+          "template": "注意：不要在对话中直接复述选项文案原文；应通过角色台词自然地让玩家感受到你的立场倾向，让玩家的输入自然导向某个方向。只有当玩家表达了足够明确的立场时，才设置 story_resolved；否则留 null。若玩家输入与多条选项都匹配不上，不要强行映射。"
+        },
+        {
+          "id": "pacing_hard_limit",
+          "condition": "choices_zh is non-empty and turn_number >= hard_limit",
+          "template": "你已经与玩家交流了 {turn_number} 轮，聊得够久了。你现在应该明确展现出结束对话的意图。用角色口吻自然地表达——例如角色看了看时间、提到还有任务要处理、或者轻轻叹了口气说「我们好像聊了很久」。以角色的方式说出告别语（如「我们该回到各自的工作上去了」「先到这里吧」）。在 suggested_choices 中给出 2~3 个自然的收束引导语（以角色口吻，如「所以你的意思是…？」「那你决定怎么做？」），帮助玩家做出选择。如果玩家已经表露出倾向，直接设置 story_resolved。如果你在本轮台词中明确表达了结束对话的意图（如告别、说再见、表示对话该结束了），必须将 topic_status 设置为 \"resolved\"。"
+        },
+        {
+          "id": "pacing_soft_limit",
+          "condition": "choices_zh is non-empty and turn_number in [soft_limit, hard_limit) and not (turn_number >= hard_limit)",
+          "template": "对话已进行 {turn_number} 轮，可以开始温和地引导收束了。在角色台词中自然融入推进信号——例如反问玩家的打算、或表达出「我们得有个结论」的态度。可在 suggested_choices 中给出 1~2 个引导语帮助玩家聚焦。保持角色性格和语气，不要显得像在催促，更像是角色在关心事情的进展。"
+        },
+        {
+          "id": "output_format_header",
+          "condition": "always",
+          "template": ""
+        },
+        {
+          "id": "output_format_title",
+          "condition": "always",
+          "template": "【输出格式（严格JSON）】"
+        },
+        {
+          "id": "output_format_schema",
+          "condition": "always",
+          "template": "你必须输出一个 JSON 对象，字段如下：\n  \"npc_text\": \"角色台词（2~5句，可含动作括号）\",\n  \"topic_status\": \"on_topic\" | \"off_topic\" | \"resolved\",\n    - \"resolved\"：当对话自然结束（双方告别/目的达成/你主动收束）时使用。参照上文【对话自然结束规则】\n    - 使用 \"resolved\" 后对话窗口将自动关闭，是正面的结束方式\n  \"emotional_shift\": {\"trust\": 0, \"affinity\": 0, \"fear\": 0},\n  \"redirection_hint\": \"若偏离，简短说明如何把话题引回剧情（供内部参考，不要对玩家说）. 留空字符串表示不偏离.\",\n  \"story_resolved\": \"choice_id 或 null\",\n  \"suggested_choices\": [\"若对话收束到选项阶段，列出1~3个自然提炼的选项标签。若无需选项则留空数组\"],\n  \"close_signal\": true | false\n    - 当对话目的已达成/玩家在拖延/对话在绕圈时设为 true（参照上文【对话自然结束规则】）\n    - 即使 close_signal 为 true，仍须输出自然的 npc_text 台词\n    - 大部分时候保持 false，不要在对话活跃时随意设为 true"
+        },
+        {
+          "id": "output_format_no_non_json",
+          "condition": "always",
+          "template": "禁止输出非 JSON 的内容。"
+        }
+      ],
+      "output_join": "\n"
+    },
+
+    "source_whisper_scene_zh": {
+      "function": "source_whisper_scene_zh",
+      "description": "为「源」用户消息附加上下文：以隐喻方式呼应 must_deliver，禁止直述超出阴谋层的事实。",
+      "parameters": [
+        {
+          "name": "node_id",
+          "type": "str",
+          "required": true,
+          "description": "剧情节点 ID"
+        },
+        {
+          "name": "title_zh",
+          "type": "str",
+          "required": true,
+          "description": "节点中文标题"
+        },
+        {
+          "name": "must_deliver_zh",
+          "type": "list[str]",
+          "required": true,
+          "description": "本场低语须共振的主题条目列表"
+        }
+      ],
+      "sections": [
+        {
+          "id": "empty_deliver",
+          "condition": "must_deliver_zh is empty",
+          "template": "剧情节点 {node_id}《{title_zh}》。以意象与断裂句式回应，不必点名具体设施。"
+        },
+        {
+          "id": "has_deliver",
+          "condition": "must_deliver_zh is non-empty",
+          "template": "剧情节点 {node_id}《{title_zh}》。\n本场低语须在隐喻/意象中与下列主题共振（勿澄清为可操作情报，勿超过已解锁阴谋层）：\n{bullets}",
+          "item_template": "- {item}"
+        }
+      ],
+      "output_join": ""
+    }
+  }
+}

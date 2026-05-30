@@ -4,7 +4,7 @@
 # 3. 若同时设置了环境变量 NARRATIVE_AI_*，仍以环境变量为准
 
 # 必填（若未设置环境变量 NARRATIVE_AI_API_KEY）：OpenAI 兼容接口的密钥
-NARRATIVE_AI_API_KEY = "sk-yloo7jr8Re5fGyidWwY85aRKEXKo0hZRVVhmRFi840qfyyvZ"
+NARRATIVE_AI_API_KEY = "sk-wzogtEZHkHfbIrxhgpmw2uQu9DaUNXnj0YNjGhJg8iU1PU8m"
 
 # 可选：接口根地址（不要带 /v1/chat/completions）
 NARRATIVE_AI_BASE_URL = "http://35.220.164.252:3888"

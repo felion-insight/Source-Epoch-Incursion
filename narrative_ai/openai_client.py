@@ -19,8 +19,7 @@ class ChatClient:
     def complete(self, req: ChatCompletionRequest) -> str:
         if self._s.dry_run:
             return (
-                "[NARRATIVE_AI_DRY_RUN=1] Placeholder: no HTTP request was made.\n"
-                "本地占位：未调用 API。若需真实生成，请设置 NARRATIVE_AI_API_KEY，并取消 DRY_RUN。"
+                "（信道静默…源暂时无法回应。请稍后再试。）"
             )
 
         body = json.dumps(req.to_api_body(self._s.model)).encode("utf-8")

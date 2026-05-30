@@ -1,0 +1,45 @@
+# ============================================================
+# 源纪元 · 岸线侵入  —  Netlify 部署配置
+# ============================================================
+# 此项目为前后端分离架构：
+#   - 前端（纯静态）→ 部署到 Netlify
+#   - 后端（Python API）→ 需单独部署（Railway / Render / VPS）
+#
+# 部署命令：netlify deploy --prod --dir=web/explorer
+# 或在 Netlify 后台连接 Git 仓库自动部署
+# ============================================================
+
+[build]
+  # 静态站点根目录
+  publish = "web/explorer/"
+  # 无需构建步骤（纯静态文件）
+  command = "echo 'No build required - static site'"
+
+[[headers]]
+  # 图片 / 字体等静态资源 — 长期缓存
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  # CSS / JS（带版本号参数）— 中期缓存
+  for = "/*.css"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"
+
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"
+
+[[headers]]
+  # HTML 入口 — 不缓存
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[redirects]]
+  # SPA 回退：所有非文件路径返回 index.html
+  from = "/*"
+  to = "/index.html"
+  status = 200
