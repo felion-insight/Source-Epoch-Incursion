@@ -4702,14 +4702,6 @@ function initDebugJumpBar() {
   // 但保持函数存在以免报错
 }
 
-// 用新的 dev panel 替换旧的 debug jump bar 初始化
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => { initDevPanel(); initBgm(); });
-} else {
-  initDevPanel();
-  initBgm();
-}
-
 /**
  * 背景音乐控制
  * - 浏览器要求用户交互后才能播放音频，因此监听首次点击/按键来启动 BGM
@@ -4721,6 +4713,14 @@ let bgmAudio = null;
 let bgmToggleBtn = null;
 let bgmUserEnabled = true; // 默认开启
 let bgmInteractionPrimed = false;
+
+// 用新的 dev panel 替换旧的 debug jump bar 初始化
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => { initDevPanel(); initBgm(); });
+} else {
+  initDevPanel();
+  initBgm();
+}
 
 function initBgm() {
   bgmAudio = document.getElementById("bgm");
