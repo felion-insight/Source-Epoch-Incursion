@@ -2164,6 +2164,273 @@ const WORKSHOP_BASE_RES_ZH = {
   intel: "情报",
 };
 
+/** 乐观 UI 模块：工坊操作先本地修改 + 即时渲染，再后台同步服务器。
+ *  出错时自动回滚到操作前备份。 */
+const OptimisticWorkshop = {
+  _backup: null,
+
+  /** 深拷贝当前 snapshot 作为回滚备份 */
+  save() {
+    this._backup = JSON.parse(JSON.stringify(workshopUiSnap));
+  },
+
+  /** 回滚到备份，清空备份 */
+  rollback() {
+    if (this._backup) {
+      workshopUiSnap = this._backup;
+      this._backup = null;
+    }
+  },
+
+  /** 丢弃备份（成功时调用） */
+  clear() {
+    this._backup = null;
+  },
+
+  // ─── 网格 Cell 工具 ───
+
+  /** 清空某个 anchor 下所有格子 */
+  _clearCells(snap, ax, ay) {
+    const grid = snap?.grid;
+    if (!grid) return;
+    for (let gy = 0; gy < grid.length; gy++) {
+      const row = grid[gy];
+      if (!row) continue;
+      for (let gx = 0; gx < row.length; gx++) {
+        const c = row[gx];
+        if (c && c.anchor_x === ax && c.anchor_y === ay) row[gx] = null;
+      }
+    }
+  },
+
+  /** 按设备模板填充 w×h 格子 */
+  _fillCells(snap, entry, ax, ay) {
+    const grid = snap?.grid;
+    if (!grid) return;
+    const w = entry.w || 1;
+    const h = entry.h || 1;
+    for (let dy = 0; dy < h; dy++) {
+      const row = grid[ay + dy];
+      if (!row) continue;
+      for (let dx = 0; dx < w; dx++) {
+        const gx = ax + dx;
+        if (gx >= row.length) continue;
+        row[gx] = {
+          is_anchor: dx === 0 && dy === 0,
+          anchor_x: ax,
+          anchor_y: ay,
+          type: entry.type,
+          label_zh: entry.label_zh,
+          level: 1,
+          active: true,
+          enabled: true,
+          assigned_npc: null,
+          recipe: null,
+          progress_pct: 0,
+          status_zh: "运行中",
+          status_code: "running",
+        };
+      }
+    }
+  },
+
+  /** 创建默认设备对象 */
+  _newDevice(entry, ax, ay) {
+    return {
+      type: entry.type,
+      label_zh: entry.label_zh,
+      anchor_x: ax,
+      anchor_y: ay,
+      w: entry.w || 1,
+      h: entry.h || 1,
+      level: 1,
+      enabled: true,
+      active: true,
+      assigned_npc: null,
+      npc_id: null,
+      recipe: null,
+      recipe_zh: null,
+      progress_pct: 0,
+      status_zh: "运行中",
+      status_code: "running",
+      can_upgrade: false,
+    };
+  },
+
+  /** 查找设备对象 */
+  _findDev(snap, ax, ay) {
+    return snap?.devices?.find((d) => d.anchor_x === ax && d.anchor_y === ay) || null;
+  },
+
+  /** 同步更新格子里的设备属性 (anchor cells) */
+  _patchGridCells(snap, ax, ay, patch) {
+    const grid = snap?.grid;
+    if (!grid) return;
+    for (let gy = 0; gy < grid.length; gy++) {
+      const row = grid[gy];
+      if (!row) continue;
+      for (let gx = 0; gx < row.length; gx++) {
+        const c = row[gx];
+        if (c && c.anchor_x === ax && c.anchor_y === ay) {
+          Object.assign(c, patch);
+        }
+      }
+    }
+  },
+
+  // ─── 操作：建造 ───
+  build(snap, x, y, deviceType) {
+    const entry = workshopCatalogEntry(snap, deviceType);
+    if (!entry || !snap) return;
+    this._fillCells(snap, entry, x, y);
+    if (!snap.devices) snap.devices = [];
+    snap.devices.push(this._newDevice(entry, x, y));
+  },
+
+  // ─── 操作：拆除 ───
+  demolish(snap, x, y) {
+    if (!snap) return;
+    this._clearCells(snap, x, y);
+    if (snap.devices) snap.devices = snap.devices.filter((d) => d.anchor_x !== x || d.anchor_y !== y);
+  },
+
+  // ─── 操作：移动 ───
+  move(snap, fromX, fromY, toX, toY) {
+    if (!snap) return;
+    const dev = this._findDev(snap, fromX, fromY);
+    if (!dev) return;
+    // 收集旧格子数据用于重新填充
+    const oldCells = [];
+    const grid = snap.grid;
+    if (grid) {
+      for (let gy = 0; gy < grid.length; gy++) {
+        const row = grid[gy];
+        if (!row) continue;
+        for (let gx = 0; gx < row.length; gx++) {
+          const c = row[gx];
+          if (c && c.anchor_x === fromX && c.anchor_y === fromY) {
+            oldCells.push({ dx: gx - fromX, dy: gy - fromY, cell: { ...c } });
+          }
+        }
+      }
+    }
+    this._clearCells(snap, fromX, fromY);
+    for (const oc of oldCells) {
+      const nx = toX + oc.dx;
+      const ny = toY + oc.dy;
+      const row = snap.grid?.[ny];
+      if (row && nx < row.length && nx >= 0) {
+        row[nx] = { ...oc.cell, anchor_x: toX, anchor_y: toY };
+      }
+    }
+    dev.anchor_x = toX;
+    dev.anchor_y = toY;
+  },
+
+  // ─── 操作：启用/暂停 ───
+  toggle(snap, x, y) {
+    const dev = this._findDev(snap, x, y);
+    if (!dev) return;
+    dev.enabled = !dev.enabled;
+    dev.status_zh = dev.enabled ? "运行中" : "已暂停";
+    dev.status_code = dev.enabled ? "running" : "off";
+    this._patchGridCells(snap, x, y, {
+      enabled: dev.enabled,
+      status_zh: dev.status_zh,
+      status_code: dev.status_code,
+    });
+  },
+
+  // ─── 操作：分配 NPC ───
+  assignNpc(snap, x, y, npcId) {
+    const dev = this._findDev(snap, x, y);
+    if (!dev) return;
+    const npc = (snap.npc_roster || []).concat(snap.npc_fatigue || []).find((n) => n.id === npcId) || null;
+    dev.npc_id = npcId || null;
+    dev.npc_label_zh = npc?.label_zh || null;
+    dev.npc_efficiency_pct = npcId ? 100 : null;
+    this._patchGridCells(snap, x, y, {
+      npc_id: dev.npc_id,
+      npc_label_zh: dev.npc_label_zh,
+    });
+  },
+
+  // ─── 操作：切换配方 ───
+  setRecipe(snap, x, y, recipe) {
+    const dev = this._findDev(snap, x, y);
+    if (!dev || dev.type !== "printer") return;
+    dev.recipe = recipe;
+    dev.recipe_zh = workshopPrinterRecipeLabel(recipe);
+  },
+
+  // ─── 操作：升级 ───
+  upgrade(snap, x, y) {
+    const dev = this._findDev(snap, x, y);
+    if (!dev) return;
+    dev.level = (dev.level || 1) + 1;
+    this._patchGridCells(snap, x, y, { level: dev.level });
+  },
+
+  // ─── 操作：委任 ───
+  delegate(snap, enabled) {
+    if (!snap) return;
+    snap.delegation_on = !!enabled;
+    snap.delegation_action_zh = enabled ? "委任自动分配已开启" : "委任已关闭";
+  },
+
+  // ─── 操作：导入源矿 ───
+  importOre(snap, amount) {
+    if (!snap) return;
+    snap.source_ore_buffer = (snap.source_ore_buffer || 0) + (amount || 1);
+  },
+
+  // ─── 操作：设置产能上限 ───
+  setCaps(snap, caps, enabled) {
+    if (!snap) return;
+    if (caps) snap.stop_caps = { ...snap.stop_caps, ...caps };
+    if (enabled != null) snap.stop_caps_enabled = !!enabled;
+  },
+
+  // ─── 操作：NPC 休息 ───
+  restNpc(snap, npcId) {
+    if (!snap) return;
+    // 取消所有设备上该 NPC 的分配
+    if (snap.devices) {
+      for (const dev of snap.devices) {
+        if (dev.npc_id === npcId) {
+          dev.npc_id = null;
+          dev.npc_label_zh = null;
+          dev.npc_efficiency_pct = null;
+        }
+      }
+    }
+    // 清除疲劳
+    if (snap.npc_fatigue) {
+      const entry = snap.npc_fatigue.find((r) => r.id === npcId);
+      if (entry) {
+        entry.needs_rest = false;
+        entry.fatigue_pct = 0;
+      }
+    }
+    // 更新格子
+    const grid = snap.grid;
+    if (grid) {
+      for (let gy = 0; gy < grid.length; gy++) {
+        const row = grid[gy];
+        if (!row) continue;
+        for (let gx = 0; gx < row.length; gx++) {
+          const c = row[gx];
+          if (c && c.npc_id === npcId) {
+            c.npc_id = null;
+            c.npc_label_zh = null;
+          }
+        }
+      }
+    }
+    snap.delegation_on = false;
+    snap.delegation_action_zh = "NPC 休息中，委任已暂停";
+  },
+};
 
 
 function explorerIconHref(key) {
@@ -3751,6 +4018,7 @@ function snapGuardAbandoned() {
 }
 
 async function openWorkshopScene(fromId = "west_shaft") {
+  setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/enter"), { method: "POST", body: "{}" });
     latestState = data;
@@ -3775,7 +4043,8 @@ async function openWorkshopScene(fromId = "west_shaft") {
       } catch {
         /* ignore poll errors */
       }
-    }, 3000);
+    }, 5000);
+
   } catch (e) {
     showErrorToast(e);
   }
@@ -3786,9 +4055,11 @@ async function openWestShaftSimScene(fromId) {
 }
 
 async function postWorkshopConstruct() {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/construct"), { method: "POST", body: "{}" });
+    OptimisticWorkshop.clear();
     await syncWorkshopFromResponse(data);
     if (workshopTutorialActive) {
       workshopUiSnap = workshopSnapFromData(data);
@@ -3800,40 +4071,52 @@ async function postWorkshopConstruct() {
     }
     showToast("基地核心自动化设施改造完成。", 3200);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    renderWorkshopScene(workshopUiSnap);
+    showErrorToast(e);
     try {
       const st = await fetchJSON(gameApiUrl("/api/state"));
       await syncWorkshopFromResponse(st);
     } catch {
       /* ignore refresh failure */
     }
-    showErrorToast(e);
   }
 }
 
 async function postWorkshopBuild(x, y, deviceType) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.build(workshopUiSnap, x, y, deviceType);
+  workshopBuildType = null;
+  workshopSelected = { x, y };
+  renderWorkshopScene(workshopUiSnap);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/build"), {
       method: "POST",
       body: JSON.stringify({ x, y, device_type: deviceType }),
     });
-    workshopBuildType = null;
-    workshopSelected = { x, y };
+    OptimisticWorkshop.clear();
     await syncWorkshopFromResponse(data);
     showToast("设备已建造。", 2400);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    renderWorkshopScene(workshopUiSnap);
+    showErrorToast(e);
     try {
       const st = await fetchJSON(gameApiUrl("/api/state"));
       await syncWorkshopFromResponse(st);
     } catch {
       /* ignore refresh failure */
     }
-    showErrorToast(e);
   }
 }
 
 async function postWorkshopUpgrade(x, y) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.upgrade(workshopUiSnap, x, y);
+  patchWorkshopGridFromSnap(workshopUiSnap);
+  refreshWorkshopDeviceDetailPanel(workshopUiSnap, { full: true });
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/upgrade"), {
@@ -3842,51 +4125,70 @@ async function postWorkshopUpgrade(x, y) {
       }),
       { soft: true, full: true },
     );
+    OptimisticWorkshop.clear();
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    patchWorkshopGridFromSnap(workshopUiSnap);
+    refreshWorkshopDeviceDetailPanel(workshopUiSnap, { full: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopDemolish(x, y) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.demolish(workshopUiSnap, x, y);
+  workshopSelected = null;
+  workshopCancelMoveMode();
+  renderWorkshopScene(workshopUiSnap);
   try {
-    workshopSelected = null;
-    workshopCancelMoveMode();
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/demolish"), {
         method: "POST",
         body: JSON.stringify({ x, y }),
       }),
     );
+    OptimisticWorkshop.clear();
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    renderWorkshopScene(workshopUiSnap);
     showErrorToast(e);
   }
 }
 
 async function postWorkshopMove(fromX, fromY, toX, toY) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.move(workshopUiSnap, fromX, fromY, toX, toY);
+  workshopCancelMoveMode();
+  workshopSelected = { x: toX, y: toY };
+  renderWorkshopScene(workshopUiSnap);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/move"), {
       method: "POST",
       body: JSON.stringify({ from_x: fromX, from_y: fromY, to_x: toX, to_y: toY }),
     });
-    workshopCancelMoveMode();
-    workshopSelected = { x: toX, y: toY };
+    OptimisticWorkshop.clear();
     await syncWorkshopFromResponse(data);
     showToast("设备已移动。", 2400);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    renderWorkshopScene(workshopUiSnap);
+    showErrorToast(e);
     try {
       const st = await fetchJSON(gameApiUrl("/api/state"));
       await syncWorkshopFromResponse(st);
     } catch {
       /* ignore refresh failure */
     }
-    showErrorToast(e);
   }
 }
 
 async function postWorkshopToggle(x, y) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.toggle(workshopUiSnap, x, y);
+  updateWorkshopLiveData(workshopUiSnap, { soft: true, full: true });
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/toggle"), {
@@ -3895,13 +4197,19 @@ async function postWorkshopToggle(x, y) {
       }),
       { soft: true, full: true },
     );
+    OptimisticWorkshop.clear();
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true, full: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopAssignNpc(x, y, npcId) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.assignNpc(workshopUiSnap, x, y, npcId);
+  updateWorkshopLiveData(workshopUiSnap, { soft: true });
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/assign_npc"), {
@@ -3910,30 +4218,42 @@ async function postWorkshopAssignNpc(x, y, npcId) {
       }),
       { soft: true },
     );
+    OptimisticWorkshop.clear();
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopSetRecipe(x, y, recipe) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.setRecipe(workshopUiSnap, x, y, recipe);
+  updateWorkshopLiveData(workshopUiSnap, { soft: true });
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/set_recipe"), {
       method: "POST",
       body: JSON.stringify({ x, y, recipe }),
     });
+    OptimisticWorkshop.clear();
     await syncWorkshopFromResponse(data, { soft: true, full: true });
     const dev = workshopSelectedDevice(workshopUiSnap);
     if (dev?.type === "printer") {
       showToast(`3D 打印机已切换为${dev.recipe_zh || workshopPrinterRecipeLabel(dev.recipe)}。`, 2600);
     }
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopDelegate(enabled) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.delegate(workshopUiSnap, enabled);
+  updateWorkshopLiveData(workshopUiSnap, { soft: true });
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/delegate"), {
@@ -3942,13 +4262,19 @@ async function postWorkshopDelegate(enabled) {
       }),
       { soft: true },
     );
+    OptimisticWorkshop.clear();
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopImportOre(amount) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.importOre(workshopUiSnap, amount);
+  updateWorkshopLiveData(workshopUiSnap, { soft: true });
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/import_source_ore"), {
@@ -3957,18 +4283,24 @@ async function postWorkshopImportOre(amount) {
       }),
       { soft: true },
     );
+    OptimisticWorkshop.clear();
     showToast("源矿已导入工坊缓冲。", 2400);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopExport(resource, amount) {
+  OptimisticWorkshop.save();
+  setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/export"), {
       method: "POST",
       body: JSON.stringify({ resource, amount }),
     });
+    OptimisticWorkshop.clear();
     await syncWorkshopFromResponse(data, { soft: true });
     const result = data.export_result || {};
     const exported = Object.entries(result).map(([k, v]) => {
@@ -3977,12 +4309,17 @@ async function postWorkshopExport(resource, amount) {
     }).join("、");
     showToast(exported ? `${exported} 已运回基地。` : "物资已运回基地。", 2400);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopSetCaps(caps, enabled) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  OptimisticWorkshop.setCaps(workshopUiSnap, caps, enabled);
+  updateWorkshopLiveData(workshopUiSnap, { soft: true });
   try {
     const body = {};
     if (caps) body.caps = caps;
@@ -3994,17 +4331,23 @@ async function postWorkshopSetCaps(caps, enabled) {
       }),
       { soft: true },
     );
+    OptimisticWorkshop.clear();
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopDeliverTask(taskId) {
+  OptimisticWorkshop.save();
+  setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/deliver_task"), {
       method: "POST",
       body: JSON.stringify({ task_id: taskId }),
     });
+    OptimisticWorkshop.clear();
     await syncWorkshopFromResponse(data, { soft: true });
     const delivery = data.delivery_result || {};
     let msg = "生产指标已交付。";
@@ -4012,28 +4355,37 @@ async function postWorkshopDeliverTask(taskId) {
     if (delivery.reveal_zh) msg += ` ${delivery.reveal_zh}`;
     showToast(msg, delivery.reveal_zh ? 5200 : 3600);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopTrade(tradeId) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
   try {
     const data = await fetchJSON(gameApiUrl("/api/sim/workshop/trade"), {
       method: "POST",
       body: JSON.stringify({ trade_id: tradeId }),
     });
+    OptimisticWorkshop.clear();
     await syncWorkshopFromResponse(data, { soft: true });
     showToast("通讯阵列交易完成。", 2600);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopRestNpc(npcId) {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
+  const npcLabel = (workshopUiSnap?.npc_fatigue || []).find((r) => r.id === npcId)?.label_zh || npcId;
+  OptimisticWorkshop.restNpc(workshopUiSnap, npcId);
+  updateWorkshopLiveData(workshopUiSnap, { soft: true });
   try {
-    const npcLabel = (workshopUiSnap?.npc_fatigue || []).find((r) => r.id === npcId)?.label_zh || npcId;
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/rest_npc"), {
         method: "POST",
@@ -4041,20 +4393,27 @@ async function postWorkshopRestNpc(npcId) {
       }),
       { soft: true },
     );
+    OptimisticWorkshop.clear();
     showToast(`${npcLabel}已安排休息，疲劳清零。设备已撤下，委任自动分配已暂停。`, 3200);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
 
 async function postWorkshopRehabilitate() {
+  OptimisticWorkshop.save();
   setWorkshopLoading(true);
   try {
     await syncWorkshopFromResponse(
       await fetchJSON(gameApiUrl("/api/sim/workshop/rehabilitate"), { method: "POST", body: "{}" }),
     );
+    OptimisticWorkshop.clear();
     showToast("基地核心自动化设施已重新启动。", 3200);
   } catch (e) {
+    OptimisticWorkshop.rollback();
+    updateWorkshopLiveData(workshopUiSnap, { soft: true });
     showErrorToast(e);
   }
 }
@@ -6080,7 +6439,7 @@ document.getElementById("sandbox-playbook-open")?.addEventListener("click", () =
   openSandboxPlaybook();
 });
 
-setInterval(refreshTopBar, 3200);
+setInterval(refreshTopBar, 8000);
 refreshTopBar();
 // dev 面板由 DOMContentLoaded → initDevPanel() 初始化
 
