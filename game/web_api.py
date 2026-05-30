@@ -478,8 +478,27 @@ def make_handler(get_sess: Callable[[], GameSession], set_sess: Callable[[GameSe
             # BaseHTTPRequestHandler 须先 send_response；否则浏览器 CORS 预检无效，Explorer 会因带 JSON Content-Type 的 GET 而整页「无法同步」
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.send_header("Vary", "Origin")
+            _apply_identity_headers(self)
+            self.end_headers()
+
+        def do_HEAD(self) -> None:  # noqa: N802
+            """HEAD 请求：返回与 GET 相同的头（部分 CDN/边缘代理会发 HEAD 探测）。"""
+            # 复用 GET 路径分发，但只写响应头
+            p = urlparse(self.path)
+            path = _norm_api_path(p.path)
+            if path in ("/", "/api/state", "/api/health", "/api/ping", "/api/build", "/api/routes"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+            elif path in ("/favicon.ico", "/robots.txt"):
+                self.send_response(204)
+            else:
+                self.send_response(404)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS")
             _apply_identity_headers(self)
             self.end_headers()
 

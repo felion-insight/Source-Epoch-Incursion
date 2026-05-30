@@ -92,6 +92,30 @@ def _read_timeout() -> float:
     return 120.0
 
 
+def _read_max_retries() -> int:
+    env = os.environ.get("NARRATIVE_AI_MAX_RETRIES")
+    if env is not None and str(env).strip():
+        return int(env)
+    mod = _load_user_settings()
+    if mod is not None and hasattr(mod, "NARRATIVE_AI_MAX_RETRIES"):
+        v = getattr(mod, "NARRATIVE_AI_MAX_RETRIES")
+        if v is not None and str(v).strip():
+            return int(v)
+    return 3
+
+
+def _read_retry_backoff_base() -> float:
+    env = os.environ.get("NARRATIVE_AI_RETRY_BACKOFF_BASE")
+    if env is not None and str(env).strip():
+        return float(env)
+    mod = _load_user_settings()
+    if mod is not None and hasattr(mod, "NARRATIVE_AI_RETRY_BACKOFF_BASE"):
+        v = getattr(mod, "NARRATIVE_AI_RETRY_BACKOFF_BASE")
+        if v is not None and str(v).strip():
+            return float(v)
+    return 2.0
+
+
 def _read_dry_run() -> bool:
     if os.environ.get("NARRATIVE_AI_DRY_RUN") is not None:
         return _env_bool("NARRATIVE_AI_DRY_RUN", False)
@@ -113,6 +137,8 @@ class Settings:
     model: str = field(default_factory=_read_model)
     api_key: str | None = field(default_factory=_read_api_key)
     timeout_seconds: float = field(default_factory=_read_timeout)
+    max_retries: int = field(default_factory=_read_max_retries)
+    retry_backoff_base: float = field(default_factory=_read_retry_backoff_base)
     dry_run: bool = field(default_factory=_read_dry_run)
 
     @property

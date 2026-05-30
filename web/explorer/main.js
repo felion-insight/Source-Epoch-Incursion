@@ -1975,7 +1975,12 @@ async function fetchJSON(url, options = {}) {
       : { "Content-Type": "application/json", ...(options.headers || {}) };
   let r;
   try {
-    r = await fetch(url, { ...options, headers });
+    r = await fetch(url, {
+      ...options,
+      headers,
+      // 不发送 Referer 头，避免某些 PaaS 边缘代理（如 Railway）因跨域 Referer 返回 403
+      referrerPolicy: "no-referrer",
+    });
   } catch (e) {
     const msg = e?.message || String(e);
     const isNetErr = msg.includes("Failed to fetch") || msg.includes("NetworkError");
@@ -1999,6 +2004,10 @@ async function fetchJSON(url, options = {}) {
     }
     if (!data.reason_zh && Array.isArray(data.post_routes) && data.post_routes.length) {
       hint += ` | post_routes=${data.post_routes.join(",")}`;
+    }
+    // 403 附加提示：通常是边缘代理/安全策略拦截
+    if (r.status === 403) {
+      hint += ` | 提示：403 通常由部署平台（Railway/Netlify）的边缘安全策略导致，请检查平台日志和 CORS 设置`;
     }
     throw new Error(`${hint}（${r.status} · ${url}）`);
   }
