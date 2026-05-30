@@ -40,3 +40,6 @@ assets/icons_generated/
 assets/facilities_generated/
 assets/portraits_generated/
 assets/map_tiles_generated/
+
+# ── 图片压缩备份（原始大文件，不提交） ─────────────────────────
+*_backup_before_compress/
